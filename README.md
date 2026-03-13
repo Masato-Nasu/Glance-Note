@@ -52,19 +52,19 @@ https://masato-nasu.github.io/Glance-Note/
 2. Tap **Share**.
 3. Scroll down and tap **Add to Home Screen**.
 4. Turn on **Open as Web App** if shown.
-5. Tap **Add**. Apple documents this Home Screen web app flow in its iPhone user guide. citeturn635518search0turn635518search6
+5. Tap **Add**. Apple documents this Home Screen web app flow in its iPhone user guide.
 
 #### Android (Chrome)
 1. Open the live URL in **Chrome**.
 2. Tap the menu.
 3. Tap **Add to home screen** and then **Install**.
-4. Follow the on-screen steps. Google documents this install flow for Android web apps in Chrome Help. citeturn635518search1
+4. Follow the on-screen steps. Google documents this install flow for Android web apps in Chrome Help.
 
 #### Desktop (Chrome)
 1. Open the live URL in **Chrome**.
 2. Click the **Install** button in the address bar, or open the menu.
 3. Choose **Install page as app**.
-4. Follow the on-screen instructions. Google documents this desktop install flow in Chrome Help. citeturn635518search5
+4. Follow the on-screen instructions. Google documents this desktop install flow in Chrome Help.
 
 ### Notes
 - Camera permission is required for gaze control.
@@ -121,19 +121,19 @@ https://masato-nasu.github.io/Glance-Note/
 2. **共有** をタップします。
 3. 下にスクロールして **ホーム画面に追加** を選びます。
 4. 表示される場合は **Open as Web App** を有効にします。
-5. **追加** を押します。Apple の iPhone ユーザーガイドでも、この Home Screen 追加手順が案内されています。 citeturn635518search0turn635518search6
+5. **追加** を押します。Apple の iPhone ユーザーガイドでも、この Home Screen 追加手順が案内されています。
 
 #### Android（Chrome）
 1. **Chrome** で公開URLを開きます。
 2. メニューを開きます。
 3. **ホーム画面に追加** → **インストール** を選びます。
-4. 画面の案内に従います。Google の Chrome Help でも、この Android 向け web app インストール手順が案内されています。 citeturn635518search1
+4. 画面の案内に従います。Google の Chrome Help でも、この Android 向け web app インストール手順が案内されています。
 
 #### デスクトップ（Chrome）
 1. **Chrome** で公開URLを開きます。
 2. アドレスバーの **Install** ボタン、またはメニューを開きます。
 3. **Install page as app** を選びます。
-4. 画面の案内に従います。Google の Chrome Help でも、このデスクトップ向けインストール手順が案内されています。 citeturn635518search5
+4. 画面の案内に従います。Google の Chrome Help でも、このデスクトップ向けインストール手順が案内されています。
 
 ### 補足
 - 視線制御のため、カメラ許可が必要です。
