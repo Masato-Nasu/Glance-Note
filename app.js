@@ -527,7 +527,7 @@ async function boot() {
   updateRecordingUI();
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.register('./sw.js?v=4', { updateViaCache: 'none' });
+      const reg = await navigator.serviceWorker.register('./sw.js?v=5', { updateViaCache: 'none' });
       setSwState(reg.active ? 'active' : 'registered');
       navigator.serviceWorker.ready.then(() => setSwState('ready')).catch(() => {});
     } catch (err) {
