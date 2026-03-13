@@ -1,4 +1,4 @@
-import vision from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm';
+import * as vision from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm';
 const { FaceLandmarker, FilesetResolver } = vision;
 
 const els = {
@@ -344,7 +344,7 @@ els.recordBtn.addEventListener('click', () => {
 });
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js?v=20260313r1').then(async reg => {
+  navigator.serviceWorker.register('./sw.js?v=20260313r2').then(async reg => {
     els.swState.textContent = 'SW: registered';
     await navigator.serviceWorker.ready;
     els.swState.textContent = 'SW: ready';
