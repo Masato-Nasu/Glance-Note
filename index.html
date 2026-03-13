@@ -12,8 +12,9 @@
     body { display:flex; min-height:100vh; }
     #app { width:100%; display:flex; flex-direction:column; align-items:center; justify-content:space-between; padding:18px 18px calc(24px + env(safe-area-inset-bottom)); box-sizing:border-box; }
     .topbar { width:100%; display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); }
+    .hidden-meta { display:none !important; }
     .pill { border:1px solid var(--line); border-radius:999px; padding:6px 10px; }
-    .center { flex:1; width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; }
+    .center { flex:1; width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:28px; }
     .logo { font-size:min(28vw, 128px); line-height:0.9; letter-spacing:-0.05em; user-select:none; }
     .crosshair { position:relative; width:min(72vw,320px); height:min(72vw,320px); border:1px solid var(--line); border-radius:50%; }
     .crosshair::before, .crosshair::after { content:""; position:absolute; background:var(--line); }
@@ -24,18 +25,20 @@
     .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; font-size:11px; color:var(--muted); }
     .stat { border:1px solid var(--line); padding:10px; border-radius:14px; text-align:center; }
     .label { display:block; font-size:10px; color:#6f6f6f; margin-bottom:4px; }
-    .controls { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+    .controls { display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:420px; width:100%; margin:0 auto; }
     button { appearance:none; border:1px solid #fff; background:#000; color:#fff; border-radius:14px; padding:14px 16px; font:inherit; }
     button.secondary { border-color:var(--line); color:var(--muted); }
     button:disabled { opacity:0.45; }
     #recordBtn.recording { background:#fff; color:#000; }
     #msg { min-height:18px; font-size:12px; color:var(--muted); text-align:center; }
+    #downloadLink { display:block; margin-top:10px; text-align:center; color:#fff; text-decoration:none; font-size:12px; }
+    #downloadLink[hidden] { display:none; }
     #player { width:100%; }
   </style>
 </head>
 <body>
   <div id="app">
-    <div class="topbar">
+    <div class="topbar hidden-meta">
       <div class="pill" id="swState">SW: idle</div>
       <div class="pill" id="modeState">Camera: off</div>
     </div>
@@ -45,11 +48,11 @@
       <div class="crosshair" aria-hidden="true">
         <div id="dot"></div>
       </div>
-      <div id="msg">Tap Start. Look left/right for pitch, up/down for volume. Sine wave only.</div>
+      <div id="msg"></div>
     </div>
 
     <div class="bottom">
-      <div class="stats">
+      <div class="stats hidden-meta">
         <div class="stat"><span class="label">Pitch</span><span id="pitchVal">--</span></div>
         <div class="stat"><span class="label">Volume</span><span id="volumeVal">--</span></div>
         <div class="stat"><span class="label">Mode</span><span id="blinkVal">sine</span></div>
@@ -57,7 +60,7 @@
       </div>
       <div class="controls">
         <button id="startBtn">Start</button>
-        <button id="calBtn" class="secondary" disabled>Calibrate</button>
+        <button id="calBtn" class="secondary hidden-meta" disabled>Calibrate</button>
         <button id="recordBtn" class="secondary" disabled>Record</button>
       </div>
       <audio id="player" controls hidden></audio>
