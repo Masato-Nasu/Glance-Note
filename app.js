@@ -26,6 +26,7 @@ const state = {
   eyeClosed: false,
   blinkEvents: [],
   lastBlinkHandledAt: 0,
+  eyeClosedAt: 0,
   earBaseline: null,
   earSmoothed: null,
   voiceIndex: 0,
@@ -289,7 +290,7 @@ function maybeHandleDoubleBlink() {
   if (state.blinkEvents.length >= 2 && now - state.lastBlinkHandledAt > 500) {
     const lastTwo = state.blinkEvents.slice(-2);
     const gap = lastTwo[1] - lastTwo[0];
-    if (gap >= 120 && gap <= 650) {
+    if (gap >= 80 && gap <= 900) {
       state.lastBlinkHandledAt = now;
       state.blinkEvents = [];
       cycleVoice();
@@ -340,9 +341,10 @@ function initCalibration(nx, ny) {
 function updateAudioFromEyes() {
   if (!state.audioReady) return;
 
-  const smoothing = 0.18;
-  state.smoothX += (state.normalizedX - state.smoothX) * smoothing;
-  state.smoothY += (state.normalizedY - state.smoothY) * smoothing;
+  const smoothingX = 0.18;
+  const smoothingY = 0.24;
+  state.smoothX += (state.normalizedX - state.smoothX) * smoothingX;
+  state.smoothY += (state.normalizedY - state.smoothY) * smoothingY;
 
   const pitchMin = 110;
   const pitchMax = 880;
@@ -390,9 +392,12 @@ function processFaceResult(result) {
 
   const ref = state.calibration;
   const xRange = 0.18;
-  const yRange = 0.16;
+  const yRange = 0.11;
   const offsetX = clamp((irisX - ref.centerX) / xRange, -1, 1);
-  const offsetY = clamp((irisY - ref.centerY) / yRange, -1, 1);
+  const rawOffsetY = clamp((irisY - ref.centerY) / yRange, -1, 1);
+  const verticalGain = 1.85;
+  const curvedOffsetY = Math.sign(rawOffsetY) * Math.pow(Math.abs(rawOffsetY), 0.82);
+  const offsetY = clamp(curvedOffsetY * verticalGain, -1, 1);
 
   state.normalizedX = (offsetX + 1) / 2;
   state.normalizedY = (offsetY + 1) / 2;
@@ -409,25 +414,33 @@ function processFaceResult(result) {
   const ear = state.earSmoothed;
 
   if (state.earBaseline == null) state.earBaseline = ear;
-  // Adapt baseline slowly upward/downward during naturally open-eye frames.
-  if (!state.eyeClosed && ear > state.earBaseline * 0.72) {
-    state.earBaseline += (ear - state.earBaseline) * 0.03;
+  // Adapt baseline only while clearly open, to avoid learning a half-closed eye.
+  if (!state.eyeClosed && ear > state.earBaseline * 0.85) {
+    state.earBaseline += (ear - state.earBaseline) * 0.02;
   }
 
   const baseline = state.earBaseline || ear || 0.3;
-  const closeThreshold = Math.max(0.11, baseline * 0.68);
-  const openThreshold = Math.max(closeThreshold + 0.025, baseline * 0.82);
+  const closeThreshold = Math.max(0.14, baseline * 0.80);
+  const openThreshold = Math.max(closeThreshold + 0.02, baseline * 0.92);
+  const now = performance.now();
 
   if (!state.eyeClosed && ear < closeThreshold) {
     state.eyeClosed = true;
+    state.eyeClosedAt = now;
   } else if (state.eyeClosed && ear > openThreshold) {
+    const closedFor = now - (state.eyeClosedAt || now);
     state.eyeClosed = false;
-    state.blinkEvents.push(performance.now());
-    maybeHandleDoubleBlink();
+    state.eyeClosedAt = 0;
+    if (closedFor >= 25 && closedFor <= 450) {
+      state.blinkEvents.push(now);
+      maybeHandleDoubleBlink();
+      pulse();
+    }
   }
 
   const debugVoice = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
-  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · EAR ${ear.toFixed(3)} · ${debugVoice}`;
+  const blinkState = state.eyeClosed ? 'closed' : 'open';
+  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 1.85 · EAR ${ear.toFixed(3)} / ${baseline.toFixed(3)} · ${blinkState} · ${debugVoice}`;
 }
 
 function renderLoop() {
