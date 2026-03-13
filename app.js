@@ -42,7 +42,8 @@ const audio = {
   recChunks: [],
   recording: false,
   pendingStart: false,
-  start() {
+  unlocked: false,
+  ensure() {
     if (this.ctx) return;
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     this.osc = this.ctx.createOscillator();
@@ -51,10 +52,10 @@ const audio = {
     this.dest = this.ctx.createMediaStreamDestination();
 
     this.osc.type = 'sine';
-    this.osc.frequency.value = 330;
+    this.osc.frequency.value = 440;
     this.filter.type = 'lowpass';
-    this.filter.frequency.value = 1800;
-    this.gain.gain.value = 0.0001;
+    this.filter.frequency.value = 2400;
+    this.gain.gain.value = 0.0;
 
     this.osc.connect(this.filter);
     this.filter.connect(this.gain);
@@ -62,43 +63,37 @@ const audio = {
     this.gain.connect(this.dest);
     this.osc.start();
   },
-  async unlockForIOS() {
-    this.start();
-    if (!this.ctx) return;
+  async unlock() {
+    this.ensure();
+    if (!this.ctx) return false;
     try {
-      if (this.ctx.state !== 'running') await this.ctx.resume();
+      await this.ctx.resume();
     } catch (e) {
       console.warn('resume failed', e);
     }
-    const primeGain = this.ctx.createGain();
-    primeGain.gain.value = 0.00001;
-    const primeOsc = this.ctx.createOscillator();
-    primeOsc.frequency.value = 440;
-    primeOsc.connect(primeGain);
-    primeGain.connect(this.ctx.destination);
-    const now = this.ctx.currentTime;
-    primeOsc.start(now);
-    primeOsc.stop(now + 0.02);
-    const buffer = this.ctx.createBuffer(1, 1, 22050);
-    const source = this.ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(primeGain);
-    source.start(now);
-    try {
-      await new Promise(resolve => setTimeout(resolve, 0));
-    } catch {}
+    const t = this.ctx.currentTime;
+    this.osc.frequency.cancelScheduledValues(t);
+    this.gain.gain.cancelScheduledValues(t);
+    this.osc.frequency.setValueAtTime(660, t);
+    this.gain.gain.setValueAtTime(0.00001, t);
+    this.gain.gain.linearRampToValueAtTime(0.02, t + 0.01);
+    this.gain.gain.linearRampToValueAtTime(0.0, t + 0.05);
+    this.unlocked = this.ctx.state === 'running';
+    return this.unlocked;
   },
   update(pitchNorm, volNorm) {
-    if (!this.ctx) return;
+    this.ensure();
+    if (!this.ctx || this.ctx.state !== 'running') return;
     const hz = 220 + pitchNorm * 660;
-    const gain = 0.005 + volNorm * 0.2;
-    const cutoff = 800 + volNorm * 3200;
-    this.osc.frequency.setTargetAtTime(hz, this.ctx.currentTime, 0.025);
-    this.gain.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.035);
-    this.filter.frequency.setTargetAtTime(cutoff, this.ctx.currentTime, 0.045);
+    const gain = 0.03 + volNorm * 0.22;
+    const cutoff = 900 + volNorm * 3000;
+    const t = this.ctx.currentTime;
+    this.osc.frequency.setTargetAtTime(hz, t, 0.02);
+    this.gain.gain.setTargetAtTime(gain, t, 0.03);
+    this.filter.frequency.setTargetAtTime(cutoff, t, 0.04);
   },
   async armRecording() {
-    this.start();
+    this.ensure();
     if (this.pendingStart || this.recording) return;
     this.pendingStart = true;
     els.recordBtn.textContent = 'REC in 0.8s';
@@ -123,12 +118,7 @@ const audio = {
   async beginMediaRecorder() {
     this.recChunks = [];
     let mimeType = '';
-    const candidates = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/mp4'
-    ];
+    const candidates = ['audio/webm;codecs=opus','audio/webm','audio/mp4'];
     for (const c of candidates) {
       if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) {
         mimeType = c;
@@ -278,8 +268,8 @@ async function start() {
   try {
     els.startBtn.disabled = true;
     els.msg.textContent = 'Opening camera…';
-    await audio.unlockForIOS();
-    if (audio.ctx && audio.ctx.state === 'suspended') await audio.ctx.resume();
+    const unlocked = await audio.unlock();
+    if (!unlocked) console.warn('audio may still be locked');
     await initVision();
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } },
@@ -358,6 +348,15 @@ function updateUi(pitchNorm, volNorm) {
   els.dot.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
 }
 
+let prewarmed = false;
+async function prewarmAudio() {
+  if (prewarmed) return;
+  prewarmed = true;
+  try { await audio.unlock(); } catch (e) { console.warn(e); }
+}
+window.addEventListener('touchstart', prewarmAudio, { passive: true, once: true });
+window.addEventListener('pointerdown', prewarmAudio, { passive: true, once: true });
+
 els.startBtn.addEventListener('click', start);
 els.calBtn.addEventListener('click', () => { els.msg.textContent = 'Look at center…'; calibrate(1500); });
 els.recordBtn.addEventListener('click', () => {
@@ -369,10 +368,7 @@ els.recordBtn.addEventListener('click', () => {
 async function reviveAudio() {
   if (!audio.ctx) return;
   try {
-    if (audio.ctx.state !== 'running') {
-      await audio.ctx.resume();
-      await audio.unlockForIOS();
-    }
+    if (audio.ctx.state !== 'running') await audio.unlock();
   } catch (e) {
     console.warn('audio revive failed', e);
   }
@@ -384,7 +380,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pageshow', () => { reviveAudio(); });
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js?v=20260313r4').then(async reg => {
+  navigator.serviceWorker.register('./sw.js?v=20260313ios2').then(async reg => {
     els.swState.textContent = 'SW: registered';
     await navigator.serviceWorker.ready;
     els.swState.textContent = 'SW: ready';
