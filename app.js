@@ -49,6 +49,8 @@ const els = {
   countdownText: document.getElementById('countdownText'),
   downloadLink: document.getElementById('downloadLink'),
   pulseRing: document.getElementById('pulseRing'),
+  swText: document.getElementById('swText'),
+  playback: document.getElementById('playback'),
 };
 
 let audioCtx;
@@ -124,6 +126,10 @@ function updateVoiceLabel() {
 
 function setAppState(label) {
   els.stateText.textContent = label;
+}
+
+function setSwState(label) {
+  if (els.swText) els.swText.textContent = label;
 }
 
 function setupAudio() {
@@ -234,9 +240,17 @@ function finalizeWavRecording() {
   }
   const blob = encodeWav(merged, state.recordingSampleRate || 44100);
   if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
-  els.downloadLink.href = URL.createObjectURL(blob);
+  if (els.playback?.src) URL.revokeObjectURL(els.playback.src);
+  if (els.playback?.src) URL.revokeObjectURL(els.playback.src);
+  const url = URL.createObjectURL(blob);
+  els.downloadLink.href = url;
   els.downloadLink.download = `glance-note-${Date.now()}.wav`;
   els.downloadLink.classList.remove('hidden');
+  if (els.playback) {
+    els.playback.src = url;
+    els.playback.classList.remove('hidden');
+    els.playback.load();
+  }
 }
 
 function cleanupWavRecorder() {
@@ -244,6 +258,27 @@ function cleanupWavRecorder() {
   try { state.recorderSilentGain?.disconnect(); } catch (_) {}
   state.recorderNode = null;
   state.recorderSilentGain = null;
+}
+
+
+function updateRecordingUI() {
+  const mode = state.recordingState;
+  els.recIndicator.className = 'rec-indicator';
+  els.downloadLink.classList.toggle('hidden', !els.downloadLink.href);
+  if (els.playback) els.playback.classList.toggle('hidden', !els.downloadLink.href);
+
+  if (mode === 'pending') {
+    els.recIndicator.classList.add('pending');
+    els.recordButton.textContent = 'Cancel';
+    els.recordButton.setAttribute('aria-pressed', 'true');
+  } else if (mode === 'recording') {
+    els.recIndicator.classList.add('recording');
+    els.recordButton.textContent = 'Stop';
+    els.recordButton.setAttribute('aria-pressed', 'true');
+  } else {
+    els.recordButton.textContent = 'Record';
+    els.recordButton.setAttribute('aria-pressed', 'false');
+  }
 }
 
 async function beginRecording() {
@@ -491,7 +526,16 @@ async function boot() {
   updateVoiceLabel();
   updateRecordingUI();
   if ('serviceWorker' in navigator) {
-    try { await navigator.serviceWorker.register('./sw.js'); } catch (_) {}
+    try {
+      const reg = await navigator.serviceWorker.register('./sw.js?v=4', { updateViaCache: 'none' });
+      setSwState(reg.active ? 'active' : 'registered');
+      navigator.serviceWorker.ready.then(() => setSwState('ready')).catch(() => {});
+    } catch (err) {
+      console.error(err);
+      setSwState('error');
+    }
+  } else {
+    setSwState('unsupported');
   }
 
   els.recordButton.addEventListener('click', async () => {
@@ -537,6 +581,7 @@ window.addEventListener('visibilitychange', () => {
 window.addEventListener('beforeunload', () => {
   cancelAnimationFrame(animationHandle);
   if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
+  if (els.playback?.src) URL.revokeObjectURL(els.playback.src);
   cleanupWavRecorder();
   state.stream?.getTracks().forEach((track) => track.stop());
   state.faceLandmarker?.close?.();

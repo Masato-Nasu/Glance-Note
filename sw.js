@@ -1,4 +1,4 @@
-const CACHE_NAME = 'glance-note-v1';
+const CACHE_NAME = 'glance-note-v4-debug';
 const CORE_ASSETS = [
   './',
   './index.html',

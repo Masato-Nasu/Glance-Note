@@ -168,3 +168,6 @@ body {
   line-height: 1.45;
   max-width: min(86vw, 460px);
 }
+
+.playback{width:min(420px,88vw);margin-top:10px;display:block;}
+.hidden{display:none !important;}

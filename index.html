@@ -20,6 +20,7 @@
     <section class="hud top-left">
       <div class="status-line"><span class="label">STATE</span><span id="stateText">idle</span></div>
       <div class="status-line"><span class="label">VOICE</span><span id="voiceText">sine</span></div>
+      <div class="status-line"><span class="label">SW</span><span id="swText">checking</span></div>
     </section>
 
     <section class="center-mark" aria-hidden="true">
@@ -35,11 +36,12 @@
       </div>
       <div class="meta-row">
         <span id="countdownText"></span>
-        <a id="downloadLink" class="download-link hidden" download="glance-note.webm">Download</a>
+        <a id="downloadLink" class="download-link hidden" download="glance-note.wav">Download WAV</a>
+        <audio id="playback" class="playback hidden" controls></audio>
       </div>
     </section>
 
-    <section id="message" class="message">Tap Record, allow camera, then move your head gently. Double blink changes voice.</section>
+    <section id="message" class="message">Tap Record, allow camera, then look with your eyes. Double blink changes voice.</section>
   </main>
 
   <script type="module" src="app.js"></script>
