@@ -29,6 +29,8 @@ const state = {
   eyeClosedAt: 0,
   earBaseline: null,
   earSmoothed: null,
+  blinkBlendBaseline: null,
+  blinkBlendSmoothed: null,
   voiceIndex: 0,
   voices: ['sine', 'triangle', 'sawtooth', 'square'],
   recorderNode: null,
@@ -102,6 +104,21 @@ function averagePoints(landmarks, indices) {
   }
   if (!count) return null;
   return { x: x / count, y: y / count };
+}
+
+
+function getBlinkBlend(result) {
+  const blendSets = result.faceBlendshapes || [];
+  if (!blendSets.length) return null;
+  const cats = blendSets[0].categories || [];
+  let left = null;
+  let right = null;
+  for (const c of cats) {
+    if (c.categoryName === 'eyeBlinkLeft') left = c.score;
+    else if (c.categoryName === 'eyeBlinkRight') right = c.score;
+  }
+  if (left == null || right == null) return null;
+  return (left + right) * 0.5;
 }
 
 function irisRelative(landmarks, eye) {
@@ -393,6 +410,7 @@ async function setupFaceLandmarker() {
     minFaceDetectionConfidence: 0.5,
     minFacePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
+    outputFaceBlendshapes: true,
   });
   state.faceReady = true;
 }
@@ -474,30 +492,53 @@ function processFaceResult(result) {
   const leftEAR = computeEAR(landmarks, EYE.left);
   const rightEAR = computeEAR(landmarks, EYE.right);
   const earRaw = (leftEAR + rightEAR) * 0.5;
+  const blinkBlendRaw = getBlinkBlend(result);
 
   if (state.earSmoothed == null) state.earSmoothed = earRaw;
   state.earSmoothed += (earRaw - state.earSmoothed) * 0.5;
   const ear = state.earSmoothed;
 
+  let blinkBlend = null;
+  if (blinkBlendRaw != null) {
+    if (state.blinkBlendSmoothed == null) state.blinkBlendSmoothed = blinkBlendRaw;
+    state.blinkBlendSmoothed += (blinkBlendRaw - state.blinkBlendSmoothed) * 0.45;
+    blinkBlend = state.blinkBlendSmoothed;
+    if (state.blinkBlendBaseline == null) state.blinkBlendBaseline = blinkBlend;
+    if (!state.eyeClosed && blinkBlend < state.blinkBlendBaseline + 0.10) {
+      state.blinkBlendBaseline += (blinkBlend - state.blinkBlendBaseline) * 0.03;
+    }
+  }
+
   if (state.earBaseline == null) state.earBaseline = ear;
-  // Adapt baseline only while clearly open, to avoid learning a half-closed eye.
   if (!state.eyeClosed && ear > state.earBaseline * 0.85) {
     state.earBaseline += (ear - state.earBaseline) * 0.02;
   }
 
-  const baseline = state.earBaseline || ear || 0.3;
-  const closeThreshold = Math.max(0.16, baseline * 0.88);
-  const openThreshold = Math.max(closeThreshold + 0.015, baseline * 0.95);
-  const now = performance.now();
+  const earBaseline = state.earBaseline || ear || 0.3;
+  const earCloseThreshold = Math.max(0.15, earBaseline * 0.86);
+  const earOpenThreshold = Math.max(earCloseThreshold + 0.012, earBaseline * 0.94);
 
-  if (!state.eyeClosed && ear < closeThreshold) {
+  const blinkBaseline = state.blinkBlendBaseline ?? 0.05;
+  const blendCloseThreshold = Math.min(0.72, blinkBaseline + 0.22);
+  const blendOpenThreshold = Math.max(0.10, blendCloseThreshold - 0.08);
+
+  const now = performance.now();
+  const isClosedByBlend = blinkBlend != null ? blinkBlend > blendCloseThreshold : false;
+  const isOpenByBlend = blinkBlend != null ? blinkBlend < blendOpenThreshold : false;
+  const isClosedByEar = ear < earCloseThreshold;
+  const isOpenByEar = ear > earOpenThreshold;
+
+  const shouldClose = blinkBlend != null ? (isClosedByBlend || (isClosedByEar && blinkBlend > blinkBaseline + 0.12)) : isClosedByEar;
+  const shouldOpen = blinkBlend != null ? (isOpenByBlend && isOpenByEar) : isOpenByEar;
+
+  if (!state.eyeClosed && shouldClose) {
     state.eyeClosed = true;
     state.eyeClosedAt = now;
-  } else if (state.eyeClosed && ear > openThreshold) {
+  } else if (state.eyeClosed && shouldOpen) {
     const closedFor = now - (state.eyeClosedAt || now);
     state.eyeClosed = false;
     state.eyeClosedAt = 0;
-    if (closedFor >= 15 && closedFor <= 550) {
+    if (closedFor >= 25 && closedFor <= 520) {
       state.blinkEvents.push(now);
       maybeHandleDoubleBlink();
       pulse();
@@ -506,7 +547,10 @@ function processFaceResult(result) {
 
   const debugVoice = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
   const blinkState = state.eyeClosed ? 'closed' : 'open';
-  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 2.8 · EAR ${ear.toFixed(3)} / ${baseline.toFixed(3)} · th ${closeThreshold.toFixed(3)} · ${blinkState} · ${debugVoice}`;
+  const blinkText = blinkBlend != null
+    ? `BL ${blinkBlend.toFixed(2)} / ${blinkBaseline.toFixed(2)} · bth ${blendCloseThreshold.toFixed(2)}`
+    : `EAR ${ear.toFixed(3)} / ${earBaseline.toFixed(3)} · eth ${earCloseThreshold.toFixed(3)}`;
+  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 2.8 · ${blinkText} · ${blinkState} · ${debugVoice}`;
 }
 
 function renderLoop() {
@@ -527,7 +571,7 @@ async function boot() {
   updateRecordingUI();
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.register('./sw.js?v=5', { updateViaCache: 'none' });
+      const reg = await navigator.serviceWorker.register('./sw.js?v=6', { updateViaCache: 'none' });
       setSwState(reg.active ? 'active' : 'registered');
       navigator.serviceWorker.ready.then(() => setSwState('ready')).catch(() => {});
     } catch (err) {
