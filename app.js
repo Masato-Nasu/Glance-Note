@@ -62,6 +62,32 @@ const audio = {
     this.gain.connect(this.dest);
     this.osc.start();
   },
+  async unlockForIOS() {
+    this.start();
+    if (!this.ctx) return;
+    try {
+      if (this.ctx.state !== 'running') await this.ctx.resume();
+    } catch (e) {
+      console.warn('resume failed', e);
+    }
+    const primeGain = this.ctx.createGain();
+    primeGain.gain.value = 0.00001;
+    const primeOsc = this.ctx.createOscillator();
+    primeOsc.frequency.value = 440;
+    primeOsc.connect(primeGain);
+    primeGain.connect(this.ctx.destination);
+    const now = this.ctx.currentTime;
+    primeOsc.start(now);
+    primeOsc.stop(now + 0.02);
+    const buffer = this.ctx.createBuffer(1, 1, 22050);
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(primeGain);
+    source.start(now);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    } catch {}
+  },
   update(pitchNorm, volNorm) {
     if (!this.ctx) return;
     const hz = 220 + pitchNorm * 660;
@@ -252,8 +278,8 @@ async function start() {
   try {
     els.startBtn.disabled = true;
     els.msg.textContent = 'Opening camera…';
-    audio.start();
-    if (audio.ctx.state === 'suspended') await audio.ctx.resume();
+    await audio.unlockForIOS();
+    if (audio.ctx && audio.ctx.state === 'suspended') await audio.ctx.resume();
     await initVision();
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } },
@@ -301,27 +327,21 @@ function renderLoop() {
   const t = performance.now();
   if (els.video.currentTime !== state.lastVideoTime) {
     state.lastVideoTime = els.video.currentTime;
-    try {
-      const result = state.landmarker.detectForVideo(els.video, t);
-      const lms = result.faceLandmarks?.[0];
-      if (lms) {
+    const result = state.landmarker.detectForVideo(els.video, t);
+    const lms = result.faceLandmarks?.[0];
+    if (lms) {
       const iris = irisControl(lms);
       state._latestIris = iris;
       state.x = smooth(state.x, iris.x, 0.22);
       state.y = smooth(state.y, iris.y, 0.18);
       const pitchNorm = clamp(0.5 - (state.x - state.centerX) * 3.2, 0, 1);
       const rawDy = (state.y - state.centerY);
-      const yMapped = clamp(0.5 + Math.sign(rawDy) * Math.pow(Math.abs(rawDy) * 4.8, 0.84), 0, 1);
+      const yMapped = clamp(0.5 + Math.sign(rawDy) * Math.pow(Math.abs(rawDy) * 4.0, 0.86), 0, 1);
       const volNorm = 1 - yMapped;
       audio.update(pitchNorm, volNorm);
       updateUi(pitchNorm, volNorm);
-      } else {
-        els.msg.textContent = 'Face not found.';
-        audio.update(0.5, 0.02);
-      }
-    } catch (err) {
-      console.error(err);
-      els.msg.textContent = 'Tracking paused.';
+    } else {
+      els.msg.textContent = 'Face not found.';
       audio.update(0.5, 0.02);
     }
   }
@@ -345,8 +365,26 @@ els.recordBtn.addEventListener('click', () => {
   else audio.armRecording();
 });
 
+
+async function reviveAudio() {
+  if (!audio.ctx) return;
+  try {
+    if (audio.ctx.state !== 'running') {
+      await audio.ctx.resume();
+      await audio.unlockForIOS();
+    }
+  } catch (e) {
+    console.warn('audio revive failed', e);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') reviveAudio();
+});
+window.addEventListener('pageshow', () => { reviveAudio(); });
+
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js?v=20260313r6').then(async reg => {
+  navigator.serviceWorker.register('./sw.js?v=20260313r4').then(async reg => {
     els.swState.textContent = 'SW: registered';
     await navigator.serviceWorker.ready;
     els.swState.textContent = 'SW: ready';
