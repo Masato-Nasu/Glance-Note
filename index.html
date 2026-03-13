@@ -1,49 +1,71 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#000000">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Glance Note">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
   <title>Glance Note</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.json?v=20260313r1" />
+  <style>
+    :root { --bg:#000; --fg:#fff; --muted:#9a9a9a; --line:#2b2b2b; }
+    html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family: Helvetica, Arial, sans-serif; height:100%; }
+    body { display:flex; min-height:100vh; }
+    #app { width:100%; display:flex; flex-direction:column; align-items:center; justify-content:space-between; padding:18px 18px calc(24px + env(safe-area-inset-bottom)); box-sizing:border-box; }
+    .topbar { width:100%; display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:6px 10px; }
+    .center { flex:1; width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; }
+    .logo { font-size:min(28vw, 128px); line-height:0.9; letter-spacing:-0.05em; user-select:none; }
+    .crosshair { position:relative; width:min(72vw,320px); height:min(72vw,320px); border:1px solid var(--line); border-radius:50%; }
+    .crosshair::before, .crosshair::after { content:""; position:absolute; background:var(--line); }
+    .crosshair::before { left:50%; top:0; bottom:0; width:1px; transform:translateX(-0.5px); }
+    .crosshair::after { top:50%; left:0; right:0; height:1px; transform:translateY(-0.5px); }
+    #dot { position:absolute; width:16px; height:16px; border-radius:50%; background:#fff; left:50%; top:50%; transform:translate(-50%,-50%); opacity:0.9; transition:transform 0.04s linear; }
+    .bottom { width:100%; display:flex; flex-direction:column; gap:14px; }
+    .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; font-size:11px; color:var(--muted); }
+    .stat { border:1px solid var(--line); padding:10px; border-radius:14px; text-align:center; }
+    .label { display:block; font-size:10px; color:#6f6f6f; margin-bottom:4px; }
+    .controls { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+    button { appearance:none; border:1px solid #fff; background:#000; color:#fff; border-radius:14px; padding:14px 16px; font:inherit; }
+    button.secondary { border-color:var(--line); color:var(--muted); }
+    button:disabled { opacity:0.45; }
+    #recordBtn.recording { background:#fff; color:#000; }
+    #msg { min-height:18px; font-size:12px; color:var(--muted); text-align:center; }
+    #player { width:100%; }
+  </style>
 </head>
 <body>
-  <main class="app-shell">
-    <video id="camera" playsinline muted autoplay></video>
-    <div class="vignette"></div>
+  <div id="app">
+    <div class="topbar">
+      <div class="pill" id="swState">SW: idle</div>
+      <div class="pill" id="modeState">Camera: off</div>
+    </div>
 
-    <section class="hud top-left">
-      <div class="status-line"><span class="label">STATE</span><span id="stateText">idle</span></div>
-      <div class="status-line"><span class="label">VOICE</span><span id="voiceText">sine</span></div>
-      <div class="status-line"><span class="label">SW</span><span id="swText">checking</span></div>
-    </section>
-
-    <section class="center-mark" aria-hidden="true">
-      <div id="logo" class="logo">GN</div>
-      <div id="pulseRing" class="pulse-ring"></div>
-    </section>
-
-    <section class="hud bottom">
-      <div id="recordHint" class="record-hint">Tap once. Recording starts after 0.8s.</div>
-      <div class="record-row">
-        <div id="recIndicator" class="rec-indicator">REC</div>
-        <button id="recordButton" class="record-button" type="button" aria-pressed="false">Record</button>
+    <div class="center">
+      <div class="logo">GN</div>
+      <div class="crosshair" aria-hidden="true">
+        <div id="dot"></div>
       </div>
-      <div class="meta-row">
-        <span id="countdownText"></span>
-        <a id="downloadLink" class="download-link hidden" download="glance-note.wav">Download WAV</a>
-        <audio id="playback" class="playback hidden" controls></audio>
+      <div id="msg">Tap Start. Look left/right for pitch, up/down for volume. Double blink changes tone.</div>
+    </div>
+
+    <div class="bottom">
+      <div class="stats">
+        <div class="stat"><span class="label">Pitch</span><span id="pitchVal">--</span></div>
+        <div class="stat"><span class="label">Volume</span><span id="volumeVal">--</span></div>
+        <div class="stat"><span class="label">Blink</span><span id="blinkVal">--</span></div>
+        <div class="stat"><span class="label">Tone</span><span id="toneVal">sine</span></div>
       </div>
-    </section>
+      <div class="controls">
+        <button id="startBtn">Start</button>
+        <button id="calBtn" class="secondary" disabled>Calibrate</button>
+        <button id="recordBtn" class="secondary" disabled>Record</button>
+      </div>
+      <audio id="player" controls hidden></audio>
+      <a id="downloadLink" hidden></a>
+      <video id="video" playsinline muted hidden></video>
+    </div>
+  </div>
 
-    <section id="message" class="message">Tap Record, allow camera, then look with your eyes. Double blink changes voice.</section>
-  </main>
-
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20260313r1"></script>
 </body>
 </html>

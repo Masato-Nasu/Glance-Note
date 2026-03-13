@@ -1,635 +1,357 @@
-import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs';
+import vision from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm';
+const { FaceLandmarker, FilesetResolver } = vision;
 
-const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
-const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
-
-const EYE = {
-  left: { top: 159, bottom: 145, left: 33, right: 133, iris: [468, 469, 470, 471, 472] },
-  right: { top: 386, bottom: 374, left: 362, right: 263, iris: [473, 474, 475, 476, 477] },
+const els = {
+  video: document.getElementById('video'),
+  startBtn: document.getElementById('startBtn'),
+  calBtn: document.getElementById('calBtn'),
+  recordBtn: document.getElementById('recordBtn'),
+  msg: document.getElementById('msg'),
+  dot: document.getElementById('dot'),
+  swState: document.getElementById('swState'),
+  modeState: document.getElementById('modeState'),
+  pitchVal: document.getElementById('pitchVal'),
+  volumeVal: document.getElementById('volumeVal'),
+  blinkVal: document.getElementById('blinkVal'),
+  toneVal: document.getElementById('toneVal'),
+  player: document.getElementById('player'),
+  downloadLink: document.getElementById('downloadLink'),
 };
 
 const state = {
-  audioReady: false,
-  cameraReady: false,
-  faceReady: false,
-  faceLandmarker: null,
-  stream: null,
-  lastVideoTime: -1,
   running: false,
-  normalizedX: 0.5,
-  normalizedY: 0.5,
-  smoothX: 0.5,
-  smoothY: 0.5,
-  faceBox: null,
-  calibration: null,
-  lastFaceSeenAt: 0,
-  eyeClosed: false,
-  blinkEvents: [],
-  lastBlinkHandledAt: 0,
-  eyeClosedAt: 0,
-  earBaseline: null,
-  earSmoothed: null,
-  blinkBlendBaseline: null,
-  blinkBlendSmoothed: null,
-  voiceIndex: 0,
-  voices: ['sine', 'triangle', 'sawtooth', 'square'],
-  recorderNode: null,
-  recorderBuffer: [],
-  recorderSilentGain: null,
-  pendingRecordTimer: null,
-  recordingState: 'idle',
-  recordingSampleRate: 44100,
+  calibrating: false,
+  landmarker: null,
+  stream: null,
+  rafId: 0,
+  lastVideoTime: -1,
+  centerX: 0.5,
+  centerY: 0.5,
+  x: 0.5,
+  y: 0.5,
+  blinkClosed: false,
+  blinkLastAt: 0,
+  toneIndex: 0,
+  blinkScore: 0,
+  recorder: null,
 };
 
-const els = {
-  video: document.getElementById('camera'),
-  stateText: document.getElementById('stateText'),
-  voiceText: document.getElementById('voiceText'),
-  message: document.getElementById('message'),
-  recordButton: document.getElementById('recordButton'),
-  recIndicator: document.getElementById('recIndicator'),
-  countdownText: document.getElementById('countdownText'),
-  downloadLink: document.getElementById('downloadLink'),
-  pulseRing: document.getElementById('pulseRing'),
-  swText: document.getElementById('swText'),
-  playback: document.getElementById('playback'),
+const toneTypes = ['sine', 'triangle', 'sawtooth', 'square'];
+
+const audio = {
+  ctx: null,
+  osc: null,
+  filter: null,
+  gain: null,
+  dest: null,
+  proc: null,
+  recording: false,
+  pendingStart: false,
+  pcmL: [],
+  sampleRate: 48000,
+  start() {
+    if (this.ctx) return;
+    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    this.sampleRate = this.ctx.sampleRate;
+    this.osc = this.ctx.createOscillator();
+    this.filter = this.ctx.createBiquadFilter();
+    this.gain = this.ctx.createGain();
+    this.dest = this.ctx.createMediaStreamDestination();
+    this.proc = this.ctx.createScriptProcessor(2048, 1, 1);
+
+    this.osc.type = toneTypes[state.toneIndex];
+    this.osc.frequency.value = 330;
+    this.filter.type = 'lowpass';
+    this.filter.frequency.value = 1800;
+    this.gain.gain.value = 0.0001;
+
+    this.osc.connect(this.filter);
+    this.filter.connect(this.gain);
+    this.gain.connect(this.ctx.destination);
+    this.gain.connect(this.dest);
+    this.dest.stream.connect = () => {};
+    this.gain.connect(this.proc);
+    this.proc.connect(this.ctx.destination);
+    this.proc.onaudioprocess = (e) => {
+      if (!this.recording) return;
+      const input = e.inputBuffer.getChannelData(0);
+      this.pcmL.push(new Float32Array(input));
+    };
+
+    this.osc.start();
+  },
+  update(pitchNorm, volNorm) {
+    if (!this.ctx) return;
+    const hz = 220 + pitchNorm * 660;
+    const gain = 0.01 + volNorm * 0.18;
+    const cutoff = 500 + volNorm * 4200;
+    this.osc.frequency.setTargetAtTime(hz, this.ctx.currentTime, 0.03);
+    this.gain.gain.setTargetAtTime(gain, this.ctx.currentTime, 0.04);
+    this.filter.frequency.setTargetAtTime(cutoff, this.ctx.currentTime, 0.05);
+  },
+  cycleTone() {
+    state.toneIndex = (state.toneIndex + 1) % toneTypes.length;
+    if (this.osc) this.osc.type = toneTypes[state.toneIndex];
+    els.toneVal.textContent = toneTypes[state.toneIndex];
+  },
+  async armRecording() {
+    this.start();
+    if (this.pendingStart || this.recording) return;
+    this.pendingStart = true;
+    els.recordBtn.textContent = 'REC in 0.8s';
+    els.recordBtn.classList.add('recording');
+    setTimeout(() => {
+      if (!this.pendingStart) return;
+      this.pendingStart = false;
+      this.recording = true;
+      this.pcmL = [];
+      els.recordBtn.textContent = 'Stop';
+      els.msg.textContent = 'Recording…';
+    }, 800);
+  },
+  stopRecording() {
+    if (this.pendingStart) {
+      this.pendingStart = false;
+      els.recordBtn.textContent = 'Record';
+      els.recordBtn.classList.remove('recording');
+      els.msg.textContent = 'Recording cancelled.';
+      return;
+    }
+    if (!this.recording) return;
+    this.recording = false;
+    els.recordBtn.textContent = 'Record';
+    els.recordBtn.classList.remove('recording');
+    const wav = encodeWav(this.pcmL, this.sampleRate);
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    els.player.src = url;
+    els.player.hidden = false;
+    els.downloadLink.href = url;
+    els.downloadLink.download = `glance-note-${Date.now()}.wav`;
+    els.downloadLink.textContent = 'Download WAV';
+    els.downloadLink.hidden = false;
+    els.msg.textContent = 'Recording ready.';
+    els.player.insertAdjacentElement('afterend', els.downloadLink);
+  }
 };
 
-let audioCtx;
-let masterGain;
-let osc;
-let filterNode;
-let outputGain;
-let analyser;
-let animationHandle;
-
-function setMessage(text) {
-  els.message.textContent = text;
-}
-
-function pulse() {
-  els.pulseRing.classList.remove('active');
-  void els.pulseRing.offsetWidth;
-  els.pulseRing.classList.add('active');
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function dist(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function computeEAR(landmarks, eye) {
-  const top = landmarks[eye.top];
-  const bottom = landmarks[eye.bottom];
-  const left = landmarks[eye.left];
-  const right = landmarks[eye.right];
-  const vertical = dist(top, bottom);
-  const horizontal = dist(left, right) || 1e-6;
-  return vertical / horizontal;
-}
-
-function averagePoints(landmarks, indices) {
-  let x = 0;
-  let y = 0;
-  let count = 0;
-  for (const idx of indices) {
-    const p = landmarks[idx];
-    if (!p) continue;
-    x += p.x;
-    y += p.y;
-    count += 1;
-  }
-  if (!count) return null;
-  return { x: x / count, y: y / count };
-}
-
-
-function getBlinkBlend(result) {
-  const blendSets = result.faceBlendshapes || [];
-  if (!blendSets.length) return null;
-  const cats = blendSets[0].categories || [];
-  let left = null;
-  let right = null;
-  for (const c of cats) {
-    if (c.categoryName === 'eyeBlinkLeft') left = c.score;
-    else if (c.categoryName === 'eyeBlinkRight') right = c.score;
-  }
-  if (left == null || right == null) return null;
-  return (left + right) * 0.5;
-}
-
-function irisRelative(landmarks, eye) {
-  const iris = averagePoints(landmarks, eye.iris);
-  const left = landmarks[eye.left];
-  const right = landmarks[eye.right];
-  const top = landmarks[eye.top];
-  const bottom = landmarks[eye.bottom];
-  if (!iris || !left || !right || !top || !bottom) return null;
-
-  const xDen = (right.x - left.x) || 1e-6;
-  const yDen = (bottom.y - top.y) || 1e-6;
-
-  const nx = clamp((iris.x - left.x) / xDen, 0, 1);
-  const ny = clamp((iris.y - top.y) / yDen, 0, 1);
-  return { x: nx, y: ny };
-}
-
-function updateVoiceLabel() {
-  els.voiceText.textContent = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
-}
-
-function setAppState(label) {
-  els.stateText.textContent = label;
-}
-
-function setSwState(label) {
-  if (els.swText) els.swText.textContent = label;
-}
-
-function setupAudio() {
-  if (state.audioReady) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-  osc = audioCtx.createOscillator();
-  osc.type = state.voices[state.voiceIndex];
-  filterNode = audioCtx.createBiquadFilter();
-  filterNode.type = 'lowpass';
-  filterNode.frequency.value = 1400;
-  filterNode.Q.value = 0.8;
-
-  outputGain = audioCtx.createGain();
-  outputGain.gain.value = 0.0;
-
-  masterGain = audioCtx.createGain();
-  masterGain.gain.value = 0.8;
-
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 1024;
-
-
-  osc.connect(filterNode);
-  filterNode.connect(outputGain);
-  outputGain.connect(masterGain);
-  masterGain.connect(audioCtx.destination);
-  masterGain.connect(analyser);
-  osc.start();
-
-  state.audioReady = true;
-}
-
-function interleaveChannels(channels) {
-  if (!channels.length) return new Float32Array(0);
-  if (channels.length === 1) return channels[0];
-  const length = channels[0].length;
-  const out = new Float32Array(length * channels.length);
-  for (let i = 0; i < length; i += 1) {
-    for (let ch = 0; ch < channels.length; ch += 1) {
-      out[i * channels.length + ch] = channels[ch][i] || 0;
+function encodeWav(chunks, sampleRate) {
+  let length = 0;
+  for (const c of chunks) length += c.length;
+  const pcm = new Int16Array(length);
+  let offset = 0;
+  for (const c of chunks) {
+    for (let i = 0; i < c.length; i++) {
+      const s = Math.max(-1, Math.min(1, c[i]));
+      pcm[offset++] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
   }
-  return out;
-}
-
-function encodeWav(samples, sampleRate) {
-  const bytesPerSample = 2;
-  const blockAlign = bytesPerSample;
-  const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+  const buffer = new ArrayBuffer(44 + pcm.length * 2);
   const view = new DataView(buffer);
-
-  function writeString(offset, string) {
-    for (let i = 0; i < string.length; i += 1) {
-      view.setUint8(offset + i, string.charCodeAt(i));
-    }
-  }
-
-  writeString(0, 'RIFF');
-  view.setUint32(4, 36 + samples.length * bytesPerSample, true);
-  writeString(8, 'WAVE');
-  writeString(12, 'fmt ');
+  writeStr(view, 0, 'RIFF');
+  view.setUint32(4, 36 + pcm.length * 2, true);
+  writeStr(view, 8, 'WAVE');
+  writeStr(view, 12, 'fmt ');
   view.setUint32(16, 16, true);
   view.setUint16(20, 1, true);
   view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
   view.setUint16(34, 16, true);
-  writeString(36, 'data');
-  view.setUint32(40, samples.length * bytesPerSample, true);
+  writeStr(view, 36, 'data');
+  view.setUint32(40, pcm.length * 2, true);
+  let p = 44;
+  for (let i = 0; i < pcm.length; i++, p += 2) view.setInt16(p, pcm[i], true);
+  return buffer;
+}
+function writeStr(view, offset, s) { for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i)); }
 
-  let offset = 44;
-  for (let i = 0; i < samples.length; i += 1) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    offset += 2;
+function avgLandmarks(lms, ids) {
+  let x = 0, y = 0;
+  for (const id of ids) { x += lms[id].x; y += lms[id].y; }
+  return { x: x / ids.length, y: y / ids.length };
+}
+
+function irisControl(lms) {
+  const L_IRIS = [468,469,470,471,472];
+  const R_IRIS = [473,474,475,476,477];
+  const li = avgLandmarks(lms, L_IRIS);
+  const ri = avgLandmarks(lms, R_IRIS);
+
+  const lOuter = lms[33], lInner = lms[133], lTop = lms[159], lBot = lms[145];
+  const rInner = lms[362], rOuter = lms[263], rTop = lms[386], rBot = lms[374];
+
+  const lxn = (li.x - lOuter.x) / Math.max(0.0001, (lInner.x - lOuter.x));
+  const rxn = (ri.x - rInner.x) / Math.max(0.0001, (rOuter.x - rInner.x));
+  const lyn = (li.y - lTop.y) / Math.max(0.0001, (lBot.y - lTop.y));
+  const ryn = (ri.y - rTop.y) / Math.max(0.0001, (rBot.y - rTop.y));
+
+  const x = clamp((lxn + rxn) * 0.5, 0, 1);
+  const y = clamp((lyn + ryn) * 0.5, 0, 1);
+  return { x, y };
+}
+
+function blinkScoreFromResult(result, lms) {
+  let score = 0;
+  const shapes = result.faceBlendshapes?.[0]?.categories || [];
+  if (shapes.length) {
+    const left = shapes.find(c => c.categoryName === 'eyeBlinkLeft')?.score ?? 0;
+    const right = shapes.find(c => c.categoryName === 'eyeBlinkRight')?.score ?? 0;
+    score = (left + right) * 0.5;
   }
-  return new Blob([view], { type: 'audio/wav' });
+  if (score > 0) return score;
+
+  const earL = eyeAspectRatio(lms[33], lms[160], lms[158], lms[133], lms[153], lms[144]);
+  const earR = eyeAspectRatio(lms[362], lms[385], lms[387], lms[263], lms[373], lms[380]);
+  const ear = (earL + earR) * 0.5;
+  return clamp(1 - (ear / 0.32), 0, 1);
 }
-
-function startWavRecorder() {
-  state.recorderBuffer = [];
-  state.recordingSampleRate = audioCtx.sampleRate;
-  const node = audioCtx.createScriptProcessor(4096, 1, 1);
-  const silentGain = audioCtx.createGain();
-  silentGain.gain.value = 0;
-  node.onaudioprocess = (event) => {
-    if (state.recordingState !== 'recording') return;
-    const input = event.inputBuffer.getChannelData(0);
-    state.recorderBuffer.push(new Float32Array(input));
-  };
-  masterGain.connect(node);
-  node.connect(silentGain);
-  silentGain.connect(audioCtx.destination);
-  state.recorderNode = node;
-  state.recorderSilentGain = silentGain;
+function eyeAspectRatio(p1,p2,p3,p4,p5,p6){
+  const d1 = dist(p2,p6), d2 = dist(p3,p5), d3 = dist(p1,p4);
+  return (d1+d2)/(2*Math.max(d3,0.00001));
 }
+function dist(a,b){const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy);}
+function clamp(v,min,max){return Math.max(min,Math.min(max,v));}
+function smooth(cur, next, amt){ return cur + (next-cur)*amt; }
 
-function finalizeWavRecording() {
-  if (!state.recorderBuffer.length) return;
-  const total = state.recorderBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = new Float32Array(total);
-  let offset = 0;
-  for (const chunk of state.recorderBuffer) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  const blob = encodeWav(merged, state.recordingSampleRate || 44100);
-  if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
-  if (els.playback?.src) URL.revokeObjectURL(els.playback.src);
-  if (els.playback?.src) URL.revokeObjectURL(els.playback.src);
-  const url = URL.createObjectURL(blob);
-  els.downloadLink.href = url;
-  els.downloadLink.download = `glance-note-${Date.now()}.wav`;
-  els.downloadLink.classList.remove('hidden');
-  if (els.playback) {
-    els.playback.src = url;
-    els.playback.classList.remove('hidden');
-    els.playback.load();
-  }
-}
-
-function cleanupWavRecorder() {
-  try { state.recorderNode?.disconnect(); } catch (_) {}
-  try { state.recorderSilentGain?.disconnect(); } catch (_) {}
-  state.recorderNode = null;
-  state.recorderSilentGain = null;
-}
-
-
-function updateRecordingUI() {
-  const mode = state.recordingState;
-  els.recIndicator.className = 'rec-indicator';
-  els.downloadLink.classList.toggle('hidden', !els.downloadLink.href);
-  if (els.playback) els.playback.classList.toggle('hidden', !els.downloadLink.href);
-
-  if (mode === 'pending') {
-    els.recIndicator.classList.add('pending');
-    els.recordButton.textContent = 'Cancel';
-    els.recordButton.setAttribute('aria-pressed', 'true');
-  } else if (mode === 'recording') {
-    els.recIndicator.classList.add('recording');
-    els.recordButton.textContent = 'Stop';
-    els.recordButton.setAttribute('aria-pressed', 'true');
-  } else {
-    els.recordButton.textContent = 'Record';
-    els.recordButton.setAttribute('aria-pressed', 'false');
-  }
-}
-
-async function beginRecording() {
-  if (!state.audioReady) setupAudio();
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-  cleanupWavRecorder();
-  state.recorderBuffer = [];
-  startWavRecorder();
-  state.recordingState = 'recording';
-  els.countdownText.textContent = '';
-  updateRecordingUI();
-  setMessage('Recording… move gently. Double blink to change voice.');
-  pulse();
-}
-
-function queueRecording() {
-  if (state.pendingRecordTimer) clearInterval(state.pendingRecordTimer);
-  let remaining = 0.8;
-  state.recordingState = 'pending';
-  updateRecordingUI();
-  els.countdownText.textContent = `REC in ${remaining.toFixed(1)}s`;
-  setMessage('Get ready… recording starts in 0.8 seconds.');
-
-  const startAt = performance.now() + 800;
-  state.pendingRecordTimer = setInterval(() => {
-    const msLeft = startAt - performance.now();
-    if (msLeft <= 0) {
-      clearInterval(state.pendingRecordTimer);
-      state.pendingRecordTimer = null;
-      beginRecording();
-      return;
-    }
-    remaining = Math.max(0, msLeft / 1000);
-    els.countdownText.textContent = `REC in ${remaining.toFixed(1)}s`;
-  }, 60);
-}
-
-function cancelQueuedRecording() {
-  if (state.pendingRecordTimer) {
-    clearInterval(state.pendingRecordTimer);
-    state.pendingRecordTimer = null;
-  }
-  state.recordingState = 'idle';
-  els.countdownText.textContent = '';
-  updateRecordingUI();
-  setMessage('Recording cancelled.');
-}
-
-function stopRecording() {
-  if (state.pendingRecordTimer) {
-    cancelQueuedRecording();
-    return;
-  }
-  if (state.recordingState === 'recording') {
-    state.recordingState = 'idle';
-    cleanupWavRecorder();
-    finalizeWavRecording();
-  }
-  updateRecordingUI();
-  els.countdownText.textContent = 'Saved below.';
-  setMessage('Recording stopped. Saved as WAV.');
-}
-
-function cycleVoice() {
-  state.voiceIndex = (state.voiceIndex + 1) % state.voices.length;
-  if (osc) osc.type = state.voices[state.voiceIndex];
-  updateVoiceLabel();
-  pulse();
-}
-
-function maybeHandleDoubleBlink() {
-  const now = performance.now();
-  state.blinkEvents = state.blinkEvents.filter((t) => now - t < 900);
-  if (state.blinkEvents.length >= 2 && now - state.lastBlinkHandledAt > 500) {
-    const lastTwo = state.blinkEvents.slice(-2);
-    const gap = lastTwo[1] - lastTwo[0];
-    if (gap >= 80 && gap <= 900) {
-      state.lastBlinkHandledAt = now;
-      state.blinkEvents = [];
-      cycleVoice();
-      setMessage(`Voice changed to ${state.voices[state.voiceIndex].replace('sawtooth', 'saw')}.`);
-    }
-  }
-}
-
-async function setupCamera() {
-  const constraints = {
-    audio: false,
-    video: {
-      facingMode: 'user',
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    },
-  };
-
-  state.stream = await navigator.mediaDevices.getUserMedia(constraints);
-  els.video.srcObject = state.stream;
-  await els.video.play();
-  state.cameraReady = true;
-}
-
-async function setupFaceLandmarker() {
-  const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-  state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+async function initVision() {
+  const fileset = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+  state.landmarker = await FaceLandmarker.createFromOptions(fileset, {
     baseOptions: {
-      modelAssetPath: MODEL_URL,
-      delegate: 'GPU',
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
     },
     runningMode: 'VIDEO',
     numFaces: 1,
+    outputFaceBlendshapes: true,
     minFaceDetectionConfidence: 0.5,
     minFacePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
-    outputFaceBlendshapes: true,
   });
-  state.faceReady = true;
 }
 
-function initCalibration(nx, ny) {
-  state.calibration = {
-    centerX: nx,
-    centerY: ny,
+async function start() {
+  try {
+    els.startBtn.disabled = true;
+    els.msg.textContent = 'Opening camera…';
+    audio.start();
+    if (audio.ctx.state === 'suspended') await audio.ctx.resume();
+    await initVision();
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 } },
+      audio: false
+    });
+    els.video.srcObject = state.stream;
+    await els.video.play();
+    state.running = true;
+    els.modeState.textContent = 'Camera: on';
+    els.calBtn.disabled = false;
+    els.recordBtn.disabled = false;
+    els.msg.textContent = 'Look at center for 2 seconds.';
+    calibrate(2000);
+    renderLoop();
+  } catch (err) {
+    console.error(err);
+    els.msg.textContent = 'Could not start camera.';
+    els.startBtn.disabled = false;
+  }
+}
+
+function calibrate(ms = 1500) {
+  state.calibrating = true;
+  let sx = 0, sy = 0, n = 0;
+  const started = performance.now();
+  const tick = () => {
+    if (!state.running) return;
+    if (performance.now() - started >= ms) {
+      if (n > 0) {
+        state.centerX = sx / n;
+        state.centerY = sy / n;
+      }
+      state.calibrating = false;
+      els.msg.textContent = 'Ready.';
+      return;
+    }
+    if (state._latestIris) { sx += state._latestIris.x; sy += state._latestIris.y; n++; }
+    requestAnimationFrame(tick);
   };
-}
-
-function updateAudioFromEyes() {
-  if (!state.audioReady) return;
-
-  const smoothingX = 0.18;
-  const smoothingY = 0.28;
-  state.smoothX += (state.normalizedX - state.smoothX) * smoothingX;
-  state.smoothY += (state.normalizedY - state.smoothY) * smoothingY;
-
-  const pitchMin = 110;
-  const pitchMax = 880;
-  const freq = pitchMin * Math.pow(pitchMax / pitchMin, state.smoothX);
-  const volume = clamp(1 - state.smoothY, 0, 1);
-  const filterValue = 700 + (1 - state.smoothY) * 2500;
-
-  const now = audioCtx?.currentTime || 0;
-  if (osc) osc.frequency.setTargetAtTime(freq, now, 0.035);
-  if (outputGain) outputGain.gain.setTargetAtTime(volume * 0.22, now, 0.05);
-  if (filterNode) filterNode.frequency.setTargetAtTime(filterValue, now, 0.06);
-}
-
-function softenWhenNoFace() {
-  if (!state.audioReady || !outputGain || !audioCtx) return;
-  outputGain.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.12);
-}
-
-function processFaceResult(result) {
-  const faces = result.faceLandmarks || [];
-  if (!faces.length) {
-    const staleFor = performance.now() - state.lastFaceSeenAt;
-    if (staleFor > 250) {
-      setAppState('searching');
-      softenWhenNoFace();
-    }
-    return;
-  }
-
-  const landmarks = faces[0];
-  const leftIris = irisRelative(landmarks, EYE.left);
-  const rightIris = irisRelative(landmarks, EYE.right);
-
-  if (!leftIris || !rightIris) {
-    softenWhenNoFace();
-    setAppState('searching');
-    setMessage('Eyes not detected clearly. Hold the phone a little closer.');
-    return;
-  }
-
-  const irisX = (leftIris.x + rightIris.x) * 0.5;
-  const irisY = (leftIris.y + rightIris.y) * 0.5;
-
-  if (!state.calibration) initCalibration(irisX, irisY);
-
-  const ref = state.calibration;
-  const xRange = 0.18;
-  const yRange = 0.07;
-  const offsetX = clamp((irisX - ref.centerX) / xRange, -1, 1);
-  const rawOffsetY = clamp((irisY - ref.centerY) / yRange, -1, 1);
-  const verticalGain = 2.8;
-  const curvedOffsetY = Math.sign(rawOffsetY) * Math.pow(Math.abs(rawOffsetY), 0.72);
-  const offsetY = clamp(curvedOffsetY * verticalGain, -1, 1);
-
-  state.normalizedX = (offsetX + 1) / 2;
-  state.normalizedY = (offsetY + 1) / 2;
-  state.lastFaceSeenAt = performance.now();
-  setAppState('live');
-  updateAudioFromEyes();
-
-  const leftEAR = computeEAR(landmarks, EYE.left);
-  const rightEAR = computeEAR(landmarks, EYE.right);
-  const earRaw = (leftEAR + rightEAR) * 0.5;
-  const blinkBlendRaw = getBlinkBlend(result);
-
-  if (state.earSmoothed == null) state.earSmoothed = earRaw;
-  state.earSmoothed += (earRaw - state.earSmoothed) * 0.5;
-  const ear = state.earSmoothed;
-
-  let blinkBlend = null;
-  if (blinkBlendRaw != null) {
-    if (state.blinkBlendSmoothed == null) state.blinkBlendSmoothed = blinkBlendRaw;
-    state.blinkBlendSmoothed += (blinkBlendRaw - state.blinkBlendSmoothed) * 0.45;
-    blinkBlend = state.blinkBlendSmoothed;
-    if (state.blinkBlendBaseline == null) state.blinkBlendBaseline = blinkBlend;
-    if (!state.eyeClosed && blinkBlend < state.blinkBlendBaseline + 0.10) {
-      state.blinkBlendBaseline += (blinkBlend - state.blinkBlendBaseline) * 0.03;
-    }
-  }
-
-  if (state.earBaseline == null) state.earBaseline = ear;
-  if (!state.eyeClosed && ear > state.earBaseline * 0.85) {
-    state.earBaseline += (ear - state.earBaseline) * 0.02;
-  }
-
-  const earBaseline = state.earBaseline || ear || 0.3;
-  const earCloseThreshold = Math.max(0.15, earBaseline * 0.86);
-  const earOpenThreshold = Math.max(earCloseThreshold + 0.012, earBaseline * 0.94);
-
-  const blinkBaseline = state.blinkBlendBaseline ?? 0.05;
-  const blendCloseThreshold = Math.min(0.72, blinkBaseline + 0.22);
-  const blendOpenThreshold = Math.max(0.10, blendCloseThreshold - 0.08);
-
-  const now = performance.now();
-  const isClosedByBlend = blinkBlend != null ? blinkBlend > blendCloseThreshold : false;
-  const isOpenByBlend = blinkBlend != null ? blinkBlend < blendOpenThreshold : false;
-  const isClosedByEar = ear < earCloseThreshold;
-  const isOpenByEar = ear > earOpenThreshold;
-
-  const shouldClose = blinkBlend != null ? (isClosedByBlend || (isClosedByEar && blinkBlend > blinkBaseline + 0.12)) : isClosedByEar;
-  const shouldOpen = blinkBlend != null ? (isOpenByBlend && isOpenByEar) : isOpenByEar;
-
-  if (!state.eyeClosed && shouldClose) {
-    state.eyeClosed = true;
-    state.eyeClosedAt = now;
-  } else if (state.eyeClosed && shouldOpen) {
-    const closedFor = now - (state.eyeClosedAt || now);
-    state.eyeClosed = false;
-    state.eyeClosedAt = 0;
-    if (closedFor >= 25 && closedFor <= 520) {
-      state.blinkEvents.push(now);
-      maybeHandleDoubleBlink();
-      pulse();
-    }
-  }
-
-  const debugVoice = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
-  const blinkState = state.eyeClosed ? 'closed' : 'open';
-  const blinkText = blinkBlend != null
-    ? `BL ${blinkBlend.toFixed(2)} / ${blinkBaseline.toFixed(2)} · bth ${blendCloseThreshold.toFixed(2)}`
-    : `EAR ${ear.toFixed(3)} / ${earBaseline.toFixed(3)} · eth ${earCloseThreshold.toFixed(3)}`;
-  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 2.8 · ${blinkText} · ${blinkState} · ${debugVoice}`;
+  requestAnimationFrame(tick);
 }
 
 function renderLoop() {
   if (!state.running) return;
-  if (state.faceLandmarker && els.video.readyState >= 2) {
-    const nowMs = performance.now();
-    if (els.video.currentTime !== state.lastVideoTime) {
-      const result = state.faceLandmarker.detectForVideo(els.video, nowMs);
-      processFaceResult(result);
-      state.lastVideoTime = els.video.currentTime;
+  const t = performance.now();
+  if (els.video.currentTime !== state.lastVideoTime) {
+    state.lastVideoTime = els.video.currentTime;
+    const result = state.landmarker.detectForVideo(els.video, t);
+    const lms = result.faceLandmarks?.[0];
+    if (lms) {
+      const iris = irisControl(lms);
+      state._latestIris = iris;
+      state.x = smooth(state.x, iris.x, 0.22);
+      state.y = smooth(state.y, iris.y, 0.18);
+      const dx = clamp((state.x - state.centerX) * 3.2 + 0.5, 0, 1);
+      const rawDy = (state.y - state.centerY);
+      const dy = clamp(0.5 + Math.sign(rawDy) * Math.pow(Math.abs(rawDy) * 4.0, 0.86), 0, 1);
+      audio.update(dx, 1 - dy);
+      updateUi(dx, 1 - dy);
+
+      const b = blinkScoreFromResult(result, lms);
+      state.blinkScore = smooth(state.blinkScore, b, 0.5);
+      handleBlink(state.blinkScore);
+    } else {
+      els.msg.textContent = 'Face not found.';
+      audio.update(0.5, 0.02);
     }
   }
-  animationHandle = requestAnimationFrame(renderLoop);
+  state.rafId = requestAnimationFrame(renderLoop);
 }
 
-async function boot() {
-  updateVoiceLabel();
-  updateRecordingUI();
-  if ('serviceWorker' in navigator) {
-    try {
-      const reg = await navigator.serviceWorker.register('./sw.js?v=6', { updateViaCache: 'none' });
-      setSwState(reg.active ? 'active' : 'registered');
-      navigator.serviceWorker.ready.then(() => setSwState('ready')).catch(() => {});
-    } catch (err) {
-      console.error(err);
-      setSwState('error');
-    }
-  } else {
-    setSwState('unsupported');
+function handleBlink(score) {
+  els.blinkVal.textContent = score.toFixed(2);
+  const now = performance.now();
+  const closed = score > 0.52;
+  if (closed && !state.blinkClosed) {
+    state.blinkClosed = true;
   }
-
-  els.recordButton.addEventListener('click', async () => {
-    try {
-      if (!state.audioReady) setupAudio();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-      if (state.recordingState === 'idle') {
-        queueRecording();
-      } else if (state.recordingState === 'pending') {
-        cancelQueuedRecording();
-      } else if (state.recordingState === 'recording') {
-        stopRecording();
-      }
-    } catch (error) {
-      console.error(error);
-      setMessage('Audio could not be started on this device.');
+  if (!closed && state.blinkClosed) {
+    state.blinkClosed = false;
+    const gap = now - state.blinkLastAt;
+    if (gap > 110 && gap < 700) {
+      audio.cycleTone();
+      els.msg.textContent = `Tone: ${toneTypes[state.toneIndex]}`;
+      state.blinkLastAt = 0;
+      return;
     }
+    state.blinkLastAt = now;
+  }
+}
+
+function updateUi(pitchNorm, volNorm) {
+  els.pitchVal.textContent = Math.round(220 + pitchNorm * 660) + 'Hz';
+  els.volumeVal.textContent = volNorm.toFixed(2);
+  const x = (pitchNorm - 0.5) * 110;
+  const y = ((1 - volNorm) - 0.5) * 110;
+  els.dot.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+  els.toneVal.textContent = toneTypes[state.toneIndex];
+}
+
+els.startBtn.addEventListener('click', start);
+els.calBtn.addEventListener('click', () => { els.msg.textContent = 'Look at center…'; calibrate(1500); });
+els.recordBtn.addEventListener('click', () => {
+  if (audio.recording || audio.pendingStart) audio.stopRecording();
+  else audio.armRecording();
+});
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js?v=20260313r1').then(async reg => {
+    els.swState.textContent = 'SW: registered';
+    await navigator.serviceWorker.ready;
+    els.swState.textContent = 'SW: ready';
+  }).catch(err => {
+    console.error(err);
+    els.swState.textContent = 'SW: error';
   });
-
-  try {
-    setAppState('booting');
-    setMessage('Loading camera and face tracking…');
-    await setupCamera();
-    await setupFaceLandmarker();
-    setAppState('ready');
-    setMessage('Ready. Keep your face near center and move your eyes gently. Double blink changes voice.');
-    state.running = true;
-    renderLoop();
-  } catch (error) {
-    console.error(error);
-    setAppState('error');
-    setMessage('Camera or face tracking could not start. Please use HTTPS and allow the front camera.');
-  }
+} else {
+  els.swState.textContent = 'SW: n/a';
 }
-
-window.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    softenWhenNoFace();
-  }
-});
-
-window.addEventListener('beforeunload', () => {
-  cancelAnimationFrame(animationHandle);
-  if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
-  if (els.playback?.src) URL.revokeObjectURL(els.playback.src);
-  cleanupWavRecorder();
-  state.stream?.getTracks().forEach((track) => track.stop());
-  state.faceLandmarker?.close?.();
-  audioCtx?.close?.();
-});
-
-boot();
