@@ -310,7 +310,7 @@ function renderLoop() {
       state.y = smooth(state.y, iris.y, 0.18);
       const pitchNorm = clamp(0.5 - (state.x - state.centerX) * 3.2, 0, 1);
       const rawDy = (state.y - state.centerY);
-      const yMapped = clamp(0.5 + Math.sign(rawDy) * Math.pow(Math.abs(rawDy) * 4.0, 0.86), 0, 1);
+      const yMapped = clamp(0.5 + Math.sign(rawDy) * Math.pow(Math.abs(rawDy) * 7.2, 0.72), 0, 1);
       const volNorm = 1 - yMapped;
       audio.update(pitchNorm, volNorm);
       updateUi(pitchNorm, volNorm);
@@ -340,7 +340,7 @@ els.recordBtn.addEventListener('click', () => {
 });
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js?v=20260313r4').then(async reg => {
+  navigator.serviceWorker.register('./sw.js?v=20260313r5').then(async reg => {
     els.swState.textContent = 'SW: registered';
     await navigator.serviceWorker.ready;
     els.swState.textContent = 'SW: ready';
