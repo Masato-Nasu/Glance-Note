@@ -476,7 +476,7 @@ function processFaceResult(result) {
   const earRaw = (leftEAR + rightEAR) * 0.5;
 
   if (state.earSmoothed == null) state.earSmoothed = earRaw;
-  state.earSmoothed += (earRaw - state.earSmoothed) * 0.35;
+  state.earSmoothed += (earRaw - state.earSmoothed) * 0.5;
   const ear = state.earSmoothed;
 
   if (state.earBaseline == null) state.earBaseline = ear;
@@ -486,8 +486,8 @@ function processFaceResult(result) {
   }
 
   const baseline = state.earBaseline || ear || 0.3;
-  const closeThreshold = Math.max(0.14, baseline * 0.80);
-  const openThreshold = Math.max(closeThreshold + 0.02, baseline * 0.92);
+  const closeThreshold = Math.max(0.16, baseline * 0.88);
+  const openThreshold = Math.max(closeThreshold + 0.015, baseline * 0.95);
   const now = performance.now();
 
   if (!state.eyeClosed && ear < closeThreshold) {
@@ -497,7 +497,7 @@ function processFaceResult(result) {
     const closedFor = now - (state.eyeClosedAt || now);
     state.eyeClosed = false;
     state.eyeClosedAt = 0;
-    if (closedFor >= 25 && closedFor <= 450) {
+    if (closedFor >= 15 && closedFor <= 550) {
       state.blinkEvents.push(now);
       maybeHandleDoubleBlink();
       pulse();
@@ -506,7 +506,7 @@ function processFaceResult(result) {
 
   const debugVoice = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
   const blinkState = state.eyeClosed ? 'closed' : 'open';
-  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 2.8 · EAR ${ear.toFixed(3)} / ${baseline.toFixed(3)} · ${blinkState} · ${debugVoice}`;
+  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 2.8 · EAR ${ear.toFixed(3)} / ${baseline.toFixed(3)} · th ${closeThreshold.toFixed(3)} · ${blinkState} · ${debugVoice}`;
 }
 
 function renderLoop() {
