@@ -408,7 +408,7 @@ function updateAudioFromEyes() {
   if (!state.audioReady) return;
 
   const smoothingX = 0.18;
-  const smoothingY = 0.24;
+  const smoothingY = 0.28;
   state.smoothX += (state.normalizedX - state.smoothX) * smoothingX;
   state.smoothY += (state.normalizedY - state.smoothY) * smoothingY;
 
@@ -458,11 +458,11 @@ function processFaceResult(result) {
 
   const ref = state.calibration;
   const xRange = 0.18;
-  const yRange = 0.11;
+  const yRange = 0.07;
   const offsetX = clamp((irisX - ref.centerX) / xRange, -1, 1);
   const rawOffsetY = clamp((irisY - ref.centerY) / yRange, -1, 1);
-  const verticalGain = 1.85;
-  const curvedOffsetY = Math.sign(rawOffsetY) * Math.pow(Math.abs(rawOffsetY), 0.82);
+  const verticalGain = 2.8;
+  const curvedOffsetY = Math.sign(rawOffsetY) * Math.pow(Math.abs(rawOffsetY), 0.72);
   const offsetY = clamp(curvedOffsetY * verticalGain, -1, 1);
 
   state.normalizedX = (offsetX + 1) / 2;
@@ -506,7 +506,7 @@ function processFaceResult(result) {
 
   const debugVoice = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
   const blinkState = state.eyeClosed ? 'closed' : 'open';
-  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 1.85 · EAR ${ear.toFixed(3)} / ${baseline.toFixed(3)} · ${blinkState} · ${debugVoice}`;
+  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · Y gain 2.8 · EAR ${ear.toFixed(3)} / ${baseline.toFixed(3)} · ${blinkState} · ${debugVoice}`;
 }
 
 function renderLoop() {
