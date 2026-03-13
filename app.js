@@ -1,0 +1,455 @@
+import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs';
+
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
+
+const EYE = {
+  left: { top: 159, bottom: 145, left: 33, right: 133 },
+  right: { top: 386, bottom: 374, left: 362, right: 263 },
+};
+
+const state = {
+  audioReady: false,
+  cameraReady: false,
+  faceReady: false,
+  faceLandmarker: null,
+  stream: null,
+  lastVideoTime: -1,
+  running: false,
+  normalizedX: 0.5,
+  normalizedY: 0.5,
+  smoothX: 0.5,
+  smoothY: 0.5,
+  faceBox: null,
+  calibration: null,
+  lastFaceSeenAt: 0,
+  eyeClosed: false,
+  blinkEvents: [],
+  lastBlinkHandledAt: 0,
+  voiceIndex: 0,
+  voices: ['sine', 'triangle', 'sawtooth', 'square'],
+  recorder: null,
+  recordingStreamDest: null,
+  recordingChunks: [],
+  pendingRecordTimer: null,
+  recordingState: 'idle',
+  mediaRecorderMime: '',
+};
+
+const els = {
+  video: document.getElementById('camera'),
+  stateText: document.getElementById('stateText'),
+  voiceText: document.getElementById('voiceText'),
+  message: document.getElementById('message'),
+  recordButton: document.getElementById('recordButton'),
+  recIndicator: document.getElementById('recIndicator'),
+  countdownText: document.getElementById('countdownText'),
+  downloadLink: document.getElementById('downloadLink'),
+  pulseRing: document.getElementById('pulseRing'),
+};
+
+let audioCtx;
+let masterGain;
+let osc;
+let filterNode;
+let outputGain;
+let analyser;
+let animationHandle;
+
+function setMessage(text) {
+  els.message.textContent = text;
+}
+
+function pulse() {
+  els.pulseRing.classList.remove('active');
+  void els.pulseRing.offsetWidth;
+  els.pulseRing.classList.add('active');
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function computeEAR(landmarks, eye) {
+  const top = landmarks[eye.top];
+  const bottom = landmarks[eye.bottom];
+  const left = landmarks[eye.left];
+  const right = landmarks[eye.right];
+  const vertical = dist(top, bottom);
+  const horizontal = dist(left, right) || 1e-6;
+  return vertical / horizontal;
+}
+
+function updateVoiceLabel() {
+  els.voiceText.textContent = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
+}
+
+function setAppState(label) {
+  els.stateText.textContent = label;
+}
+
+function setupAudio() {
+  if (state.audioReady) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  osc = audioCtx.createOscillator();
+  osc.type = state.voices[state.voiceIndex];
+  filterNode = audioCtx.createBiquadFilter();
+  filterNode.type = 'lowpass';
+  filterNode.frequency.value = 1400;
+  filterNode.Q.value = 0.8;
+
+  outputGain = audioCtx.createGain();
+  outputGain.gain.value = 0.0;
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.8;
+
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+
+  state.recordingStreamDest = audioCtx.createMediaStreamDestination();
+
+  osc.connect(filterNode);
+  filterNode.connect(outputGain);
+  outputGain.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
+  masterGain.connect(state.recordingStreamDest);
+  masterGain.connect(analyser);
+  osc.start();
+
+  state.audioReady = true;
+}
+
+function supportedMimeType() {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function createRecorder() {
+  if (!state.recordingStreamDest) return null;
+  const mimeType = supportedMimeType();
+  state.mediaRecorderMime = mimeType;
+  try {
+    return new MediaRecorder(state.recordingStreamDest.stream, mimeType ? { mimeType } : undefined);
+  } catch (_) {
+    return new MediaRecorder(state.recordingStreamDest.stream);
+  }
+}
+
+function updateRecordingUI() {
+  const mode = state.recordingState;
+  els.recIndicator.className = 'rec-indicator';
+  els.downloadLink.classList.toggle('hidden', !els.downloadLink.href);
+
+  if (mode === 'pending') {
+    els.recIndicator.classList.add('pending');
+    els.recordButton.textContent = 'Cancel';
+    els.recordButton.setAttribute('aria-pressed', 'true');
+  } else if (mode === 'recording') {
+    els.recIndicator.classList.add('recording');
+    els.recordButton.textContent = 'Stop';
+    els.recordButton.setAttribute('aria-pressed', 'true');
+  } else {
+    els.recordButton.textContent = 'Record';
+    els.recordButton.setAttribute('aria-pressed', 'false');
+  }
+}
+
+async function beginRecording() {
+  if (!state.audioReady) setupAudio();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  if (state.recorder && state.recorder.state !== 'inactive') {
+    try { state.recorder.stop(); } catch (_) {}
+  }
+
+  state.recordingChunks = [];
+  state.recorder = createRecorder();
+  if (!state.recorder) {
+    setMessage('Recording is not supported on this device/browser.');
+    return;
+  }
+
+  state.recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size) state.recordingChunks.push(event.data);
+  };
+
+  state.recorder.onstop = () => {
+    if (!state.recordingChunks.length) return;
+    const blob = new Blob(state.recordingChunks, { type: state.mediaRecorderMime || 'audio/webm' });
+    if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
+    els.downloadLink.href = URL.createObjectURL(blob);
+    els.downloadLink.download = `glance-note-${Date.now()}.webm`;
+    els.downloadLink.classList.remove('hidden');
+  };
+
+  state.recorder.start();
+  state.recordingState = 'recording';
+  els.countdownText.textContent = '';
+  updateRecordingUI();
+  setMessage('Recording… move gently. Double blink to change voice.');
+  pulse();
+}
+
+function queueRecording() {
+  if (state.pendingRecordTimer) clearInterval(state.pendingRecordTimer);
+  let remaining = 0.8;
+  state.recordingState = 'pending';
+  updateRecordingUI();
+  els.countdownText.textContent = `REC in ${remaining.toFixed(1)}s`;
+  setMessage('Get ready… recording starts in 0.8 seconds.');
+
+  const startAt = performance.now() + 800;
+  state.pendingRecordTimer = setInterval(() => {
+    const msLeft = startAt - performance.now();
+    if (msLeft <= 0) {
+      clearInterval(state.pendingRecordTimer);
+      state.pendingRecordTimer = null;
+      beginRecording();
+      return;
+    }
+    remaining = Math.max(0, msLeft / 1000);
+    els.countdownText.textContent = `REC in ${remaining.toFixed(1)}s`;
+  }, 60);
+}
+
+function cancelQueuedRecording() {
+  if (state.pendingRecordTimer) {
+    clearInterval(state.pendingRecordTimer);
+    state.pendingRecordTimer = null;
+  }
+  state.recordingState = 'idle';
+  els.countdownText.textContent = '';
+  updateRecordingUI();
+  setMessage('Recording cancelled.');
+}
+
+function stopRecording() {
+  if (state.pendingRecordTimer) {
+    cancelQueuedRecording();
+    return;
+  }
+  if (state.recorder && state.recorder.state === 'recording') {
+    state.recorder.stop();
+  }
+  state.recordingState = 'idle';
+  updateRecordingUI();
+  els.countdownText.textContent = 'Saved below.';
+  setMessage('Recording stopped.');
+}
+
+function cycleVoice() {
+  state.voiceIndex = (state.voiceIndex + 1) % state.voices.length;
+  if (osc) osc.type = state.voices[state.voiceIndex];
+  updateVoiceLabel();
+  pulse();
+}
+
+function maybeHandleDoubleBlink() {
+  const now = performance.now();
+  state.blinkEvents = state.blinkEvents.filter((t) => now - t < 900);
+  if (state.blinkEvents.length >= 2 && now - state.lastBlinkHandledAt > 500) {
+    const lastTwo = state.blinkEvents.slice(-2);
+    const gap = lastTwo[1] - lastTwo[0];
+    if (gap >= 120 && gap <= 650) {
+      state.lastBlinkHandledAt = now;
+      state.blinkEvents = [];
+      cycleVoice();
+      setMessage(`Voice changed to ${state.voices[state.voiceIndex].replace('sawtooth', 'saw')}.`);
+    }
+  }
+}
+
+async function setupCamera() {
+  const constraints = {
+    audio: false,
+    video: {
+      facingMode: 'user',
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
+  };
+
+  state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  els.video.srcObject = state.stream;
+  await els.video.play();
+  state.cameraReady = true;
+}
+
+async function setupFaceLandmarker() {
+  const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+  state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: MODEL_URL,
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    minFaceDetectionConfidence: 0.5,
+    minFacePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+  state.faceReady = true;
+}
+
+function initCalibration(cx, cy, box) {
+  state.calibration = {
+    centerX: cx,
+    centerY: cy,
+    width: box.width,
+    height: box.height,
+  };
+}
+
+function updateAudioFromFace() {
+  if (!state.audioReady || !state.calibration) return;
+
+  const smoothing = 0.16;
+  state.smoothX += (state.normalizedX - state.smoothX) * smoothing;
+  state.smoothY += (state.normalizedY - state.smoothY) * smoothing;
+
+  const pitchMin = 110;
+  const pitchMax = 880;
+  const freq = pitchMin * Math.pow(pitchMax / pitchMin, state.smoothX);
+  const volume = clamp(1 - state.smoothY, 0, 1);
+  const filterValue = 500 + (1 - state.smoothY) * 2600;
+
+  const now = audioCtx?.currentTime || 0;
+  if (osc) osc.frequency.setTargetAtTime(freq, now, 0.035);
+  if (outputGain) outputGain.gain.setTargetAtTime(volume * 0.22, now, 0.05);
+  if (filterNode) filterNode.frequency.setTargetAtTime(filterValue, now, 0.06);
+}
+
+function softenWhenNoFace() {
+  if (!state.audioReady || !outputGain || !audioCtx) return;
+  outputGain.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.12);
+}
+
+function processFaceResult(result) {
+  const faces = result.faceLandmarks || [];
+  if (!faces.length) {
+    const staleFor = performance.now() - state.lastFaceSeenAt;
+    if (staleFor > 250) {
+      setAppState('searching');
+      softenWhenNoFace();
+    }
+    return;
+  }
+
+  const landmarks = faces[0];
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (const p of landmarks) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const box = { width: Math.max(0.001, maxX - minX), height: Math.max(0.001, maxY - minY) };
+
+  const nose = landmarks[1] || landmarks[4] || landmarks[0];
+  const cx = nose.x;
+  const cy = nose.y;
+
+  if (!state.calibration) initCalibration(cx, cy, box);
+
+  const ref = state.calibration;
+  const xRange = Math.max(0.03, ref.width * 0.85);
+  const yRange = Math.max(0.03, ref.height * 0.85);
+  const offsetX = clamp((cx - ref.centerX) / xRange, -1, 1);
+  const offsetY = clamp((cy - ref.centerY) / yRange, -1, 1);
+
+  state.normalizedX = (offsetX + 1) / 2;
+  state.normalizedY = (offsetY + 1) / 2;
+  state.lastFaceSeenAt = performance.now();
+  setAppState('live');
+  updateAudioFromFace();
+
+  const leftEAR = computeEAR(landmarks, EYE.left);
+  const rightEAR = computeEAR(landmarks, EYE.right);
+  const ear = (leftEAR + rightEAR) * 0.5;
+  const closeThreshold = 0.19;
+  const openThreshold = 0.23;
+
+  if (!state.eyeClosed && ear < closeThreshold) {
+    state.eyeClosed = true;
+  } else if (state.eyeClosed && ear > openThreshold) {
+    state.eyeClosed = false;
+    state.blinkEvents.push(performance.now());
+    maybeHandleDoubleBlink();
+  }
+}
+
+function renderLoop() {
+  if (!state.running) return;
+  if (state.faceLandmarker && els.video.readyState >= 2) {
+    const nowMs = performance.now();
+    if (els.video.currentTime !== state.lastVideoTime) {
+      const result = state.faceLandmarker.detectForVideo(els.video, nowMs);
+      processFaceResult(result);
+      state.lastVideoTime = els.video.currentTime;
+    }
+  }
+  animationHandle = requestAnimationFrame(renderLoop);
+}
+
+async function boot() {
+  updateVoiceLabel();
+  updateRecordingUI();
+  if ('serviceWorker' in navigator) {
+    try { await navigator.serviceWorker.register('./sw.js'); } catch (_) {}
+  }
+
+  els.recordButton.addEventListener('click', async () => {
+    try {
+      if (!state.audioReady) setupAudio();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+      if (state.recordingState === 'idle') {
+        queueRecording();
+      } else if (state.recordingState === 'pending') {
+        cancelQueuedRecording();
+      } else if (state.recordingState === 'recording') {
+        stopRecording();
+      }
+    } catch (error) {
+      console.error(error);
+      setMessage('Audio could not be started on this device.');
+    }
+  });
+
+  try {
+    setAppState('booting');
+    setMessage('Loading camera and face tracking…');
+    await setupCamera();
+    await setupFaceLandmarker();
+    setAppState('ready');
+    setMessage('Ready. Keep your face near center, then move gently.');
+    state.running = true;
+    renderLoop();
+  } catch (error) {
+    console.error(error);
+    setAppState('error');
+    setMessage('Camera or face tracking could not start. Please use HTTPS and allow the front camera.');
+  }
+}
+
+window.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    softenWhenNoFace();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  cancelAnimationFrame(animationHandle);
+  if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
+  state.stream?.getTracks().forEach((track) => track.stop());
+  state.faceLandmarker?.close?.();
+  audioCtx?.close?.();
+});
+
+boot();

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Glance Note">
+  <title>Glance Note</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <video id="camera" playsinline muted autoplay></video>
+    <div class="vignette"></div>
+
+    <section class="hud top-left">
+      <div class="status-line"><span class="label">STATE</span><span id="stateText">idle</span></div>
+      <div class="status-line"><span class="label">VOICE</span><span id="voiceText">sine</span></div>
+    </section>
+
+    <section class="center-mark" aria-hidden="true">
+      <div id="logo" class="logo">GN</div>
+      <div id="pulseRing" class="pulse-ring"></div>
+    </section>
+
+    <section class="hud bottom">
+      <div id="recordHint" class="record-hint">Tap once. Recording starts after 0.8s.</div>
+      <div class="record-row">
+        <div id="recIndicator" class="rec-indicator">REC</div>
+        <button id="recordButton" class="record-button" type="button" aria-pressed="false">Record</button>
+      </div>
+      <div class="meta-row">
+        <span id="countdownText"></span>
+        <a id="downloadLink" class="download-link hidden" download="glance-note.webm">Download</a>
+      </div>
+    </section>
+
+    <section id="message" class="message">Tap Record, allow camera, then move your head gently. Double blink changes voice.</section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
