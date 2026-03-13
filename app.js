@@ -290,7 +290,7 @@ function renderLoop() {
       state._latestIris = iris;
       state.x = smooth(state.x, iris.x, 0.22);
       state.y = smooth(state.y, iris.y, 0.18);
-      const dx = clamp((state.x - state.centerX) * 3.2 + 0.5, 0, 1);
+      const dx = clamp(0.5 - (state.x - state.centerX) * 3.2, 0, 1);
       const rawDy = (state.y - state.centerY);
       const dy = clamp(0.5 + Math.sign(rawDy) * Math.pow(Math.abs(rawDy) * 4.0, 0.86), 0, 1);
       audio.update(dx, 1 - dy);
@@ -344,7 +344,7 @@ els.recordBtn.addEventListener('click', () => {
 });
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js?v=20260313r2').then(async reg => {
+  navigator.serviceWorker.register('./sw.js?v=20260313r3').then(async reg => {
     els.swState.textContent = 'SW: registered';
     await navigator.serviceWorker.ready;
     els.swState.textContent = 'SW: ready';
