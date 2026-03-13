@@ -4,8 +4,8 @@ const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmark
 const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
 
 const EYE = {
-  left: { top: 159, bottom: 145, left: 33, right: 133 },
-  right: { top: 386, bottom: 374, left: 362, right: 263 },
+  left: { top: 159, bottom: 145, left: 33, right: 133, iris: [468, 469, 470, 471, 472] },
+  right: { top: 386, bottom: 374, left: 362, right: 263, iris: [473, 474, 475, 476, 477] },
 };
 
 const state = {
@@ -26,6 +26,8 @@ const state = {
   eyeClosed: false,
   blinkEvents: [],
   lastBlinkHandledAt: 0,
+  earBaseline: null,
+  earSmoothed: null,
   voiceIndex: 0,
   voices: ['sine', 'triangle', 'sawtooth', 'square'],
   recorder: null,
@@ -82,6 +84,37 @@ function computeEAR(landmarks, eye) {
   const vertical = dist(top, bottom);
   const horizontal = dist(left, right) || 1e-6;
   return vertical / horizontal;
+}
+
+function averagePoints(landmarks, indices) {
+  let x = 0;
+  let y = 0;
+  let count = 0;
+  for (const idx of indices) {
+    const p = landmarks[idx];
+    if (!p) continue;
+    x += p.x;
+    y += p.y;
+    count += 1;
+  }
+  if (!count) return null;
+  return { x: x / count, y: y / count };
+}
+
+function irisRelative(landmarks, eye) {
+  const iris = averagePoints(landmarks, eye.iris);
+  const left = landmarks[eye.left];
+  const right = landmarks[eye.right];
+  const top = landmarks[eye.top];
+  const bottom = landmarks[eye.bottom];
+  if (!iris || !left || !right || !top || !bottom) return null;
+
+  const xDen = (right.x - left.x) || 1e-6;
+  const yDen = (bottom.y - top.y) || 1e-6;
+
+  const nx = clamp((iris.x - left.x) / xDen, 0, 1);
+  const ny = clamp((iris.y - top.y) / yDen, 0, 1);
+  return { x: nx, y: ny };
 }
 
 function updateVoiceLabel() {
@@ -297,19 +330,17 @@ async function setupFaceLandmarker() {
   state.faceReady = true;
 }
 
-function initCalibration(cx, cy, box) {
+function initCalibration(nx, ny) {
   state.calibration = {
-    centerX: cx,
-    centerY: cy,
-    width: box.width,
-    height: box.height,
+    centerX: nx,
+    centerY: ny,
   };
 }
 
-function updateAudioFromFace() {
-  if (!state.audioReady || !state.calibration) return;
+function updateAudioFromEyes() {
+  if (!state.audioReady) return;
 
-  const smoothing = 0.16;
+  const smoothing = 0.18;
   state.smoothX += (state.normalizedX - state.smoothX) * smoothing;
   state.smoothY += (state.normalizedY - state.smoothY) * smoothing;
 
@@ -317,7 +348,7 @@ function updateAudioFromFace() {
   const pitchMax = 880;
   const freq = pitchMin * Math.pow(pitchMax / pitchMin, state.smoothX);
   const volume = clamp(1 - state.smoothY, 0, 1);
-  const filterValue = 500 + (1 - state.smoothY) * 2600;
+  const filterValue = 700 + (1 - state.smoothY) * 2500;
 
   const now = audioCtx?.currentTime || 0;
   if (osc) osc.frequency.setTargetAtTime(freq, now, 0.035);
@@ -342,38 +373,50 @@ function processFaceResult(result) {
   }
 
   const landmarks = faces[0];
-  let minX = 1, minY = 1, maxX = 0, maxY = 0;
-  for (const p of landmarks) {
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
+  const leftIris = irisRelative(landmarks, EYE.left);
+  const rightIris = irisRelative(landmarks, EYE.right);
+
+  if (!leftIris || !rightIris) {
+    softenWhenNoFace();
+    setAppState('searching');
+    setMessage('Eyes not detected clearly. Hold the phone a little closer.');
+    return;
   }
-  const box = { width: Math.max(0.001, maxX - minX), height: Math.max(0.001, maxY - minY) };
 
-  const nose = landmarks[1] || landmarks[4] || landmarks[0];
-  const cx = nose.x;
-  const cy = nose.y;
+  const irisX = (leftIris.x + rightIris.x) * 0.5;
+  const irisY = (leftIris.y + rightIris.y) * 0.5;
 
-  if (!state.calibration) initCalibration(cx, cy, box);
+  if (!state.calibration) initCalibration(irisX, irisY);
 
   const ref = state.calibration;
-  const xRange = Math.max(0.03, ref.width * 0.85);
-  const yRange = Math.max(0.03, ref.height * 0.85);
-  const offsetX = clamp((cx - ref.centerX) / xRange, -1, 1);
-  const offsetY = clamp((cy - ref.centerY) / yRange, -1, 1);
+  const xRange = 0.18;
+  const yRange = 0.16;
+  const offsetX = clamp((irisX - ref.centerX) / xRange, -1, 1);
+  const offsetY = clamp((irisY - ref.centerY) / yRange, -1, 1);
 
   state.normalizedX = (offsetX + 1) / 2;
   state.normalizedY = (offsetY + 1) / 2;
   state.lastFaceSeenAt = performance.now();
   setAppState('live');
-  updateAudioFromFace();
+  updateAudioFromEyes();
 
   const leftEAR = computeEAR(landmarks, EYE.left);
   const rightEAR = computeEAR(landmarks, EYE.right);
-  const ear = (leftEAR + rightEAR) * 0.5;
-  const closeThreshold = 0.19;
-  const openThreshold = 0.23;
+  const earRaw = (leftEAR + rightEAR) * 0.5;
+
+  if (state.earSmoothed == null) state.earSmoothed = earRaw;
+  state.earSmoothed += (earRaw - state.earSmoothed) * 0.35;
+  const ear = state.earSmoothed;
+
+  if (state.earBaseline == null) state.earBaseline = ear;
+  // Adapt baseline slowly upward/downward during naturally open-eye frames.
+  if (!state.eyeClosed && ear > state.earBaseline * 0.72) {
+    state.earBaseline += (ear - state.earBaseline) * 0.03;
+  }
+
+  const baseline = state.earBaseline || ear || 0.3;
+  const closeThreshold = Math.max(0.11, baseline * 0.68);
+  const openThreshold = Math.max(closeThreshold + 0.025, baseline * 0.82);
 
   if (!state.eyeClosed && ear < closeThreshold) {
     state.eyeClosed = true;
@@ -382,6 +425,9 @@ function processFaceResult(result) {
     state.blinkEvents.push(performance.now());
     maybeHandleDoubleBlink();
   }
+
+  const debugVoice = state.voices[state.voiceIndex].replace('sawtooth', 'saw');
+  els.message.textContent = `Ready. Gaze X ${state.normalizedX.toFixed(2)} Y ${state.normalizedY.toFixed(2)} · EAR ${ear.toFixed(3)} · ${debugVoice}`;
 }
 
 function renderLoop() {
@@ -428,7 +474,7 @@ async function boot() {
     await setupCamera();
     await setupFaceLandmarker();
     setAppState('ready');
-    setMessage('Ready. Keep your face near center, then move gently.');
+    setMessage('Ready. Keep your face near center and move your eyes gently. Double blink changes voice.');
     state.running = true;
     renderLoop();
   } catch (error) {
