@@ -31,12 +31,12 @@ const state = {
   earSmoothed: null,
   voiceIndex: 0,
   voices: ['sine', 'triangle', 'sawtooth', 'square'],
-  recorder: null,
-  recordingStreamDest: null,
-  recordingChunks: [],
+  recorderNode: null,
+  recorderBuffer: [],
+  recorderSilentGain: null,
   pendingRecordTimer: null,
   recordingState: 'idle',
-  mediaRecorderMime: '',
+  recordingSampleRate: 44100,
 };
 
 const els = {
@@ -146,83 +146,113 @@ function setupAudio() {
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 1024;
 
-  state.recordingStreamDest = audioCtx.createMediaStreamDestination();
 
   osc.connect(filterNode);
   filterNode.connect(outputGain);
   outputGain.connect(masterGain);
   masterGain.connect(audioCtx.destination);
-  masterGain.connect(state.recordingStreamDest);
   masterGain.connect(analyser);
   osc.start();
 
   state.audioReady = true;
 }
 
-function supportedMimeType() {
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
-  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+function interleaveChannels(channels) {
+  if (!channels.length) return new Float32Array(0);
+  if (channels.length === 1) return channels[0];
+  const length = channels[0].length;
+  const out = new Float32Array(length * channels.length);
+  for (let i = 0; i < length; i += 1) {
+    for (let ch = 0; ch < channels.length; ch += 1) {
+      out[i * channels.length + ch] = channels[ch][i] || 0;
+    }
+  }
+  return out;
 }
 
-function createRecorder() {
-  if (!state.recordingStreamDest) return null;
-  const mimeType = supportedMimeType();
-  state.mediaRecorderMime = mimeType;
-  try {
-    return new MediaRecorder(state.recordingStreamDest.stream, mimeType ? { mimeType } : undefined);
-  } catch (_) {
-    return new MediaRecorder(state.recordingStreamDest.stream);
+function encodeWav(samples, sampleRate) {
+  const bytesPerSample = 2;
+  const blockAlign = bytesPerSample;
+  const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+  const view = new DataView(buffer);
+
+  function writeString(offset, string) {
+    for (let i = 0; i < string.length; i += 1) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
   }
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * bytesPerSample, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, samples.length * bytesPerSample, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    offset += 2;
+  }
+  return new Blob([view], { type: 'audio/wav' });
 }
 
-function updateRecordingUI() {
-  const mode = state.recordingState;
-  els.recIndicator.className = 'rec-indicator';
-  els.downloadLink.classList.toggle('hidden', !els.downloadLink.href);
+function startWavRecorder() {
+  state.recorderBuffer = [];
+  state.recordingSampleRate = audioCtx.sampleRate;
+  const node = audioCtx.createScriptProcessor(4096, 1, 1);
+  const silentGain = audioCtx.createGain();
+  silentGain.gain.value = 0;
+  node.onaudioprocess = (event) => {
+    if (state.recordingState !== 'recording') return;
+    const input = event.inputBuffer.getChannelData(0);
+    state.recorderBuffer.push(new Float32Array(input));
+  };
+  masterGain.connect(node);
+  node.connect(silentGain);
+  silentGain.connect(audioCtx.destination);
+  state.recorderNode = node;
+  state.recorderSilentGain = silentGain;
+}
 
-  if (mode === 'pending') {
-    els.recIndicator.classList.add('pending');
-    els.recordButton.textContent = 'Cancel';
-    els.recordButton.setAttribute('aria-pressed', 'true');
-  } else if (mode === 'recording') {
-    els.recIndicator.classList.add('recording');
-    els.recordButton.textContent = 'Stop';
-    els.recordButton.setAttribute('aria-pressed', 'true');
-  } else {
-    els.recordButton.textContent = 'Record';
-    els.recordButton.setAttribute('aria-pressed', 'false');
+function finalizeWavRecording() {
+  if (!state.recorderBuffer.length) return;
+  const total = state.recorderBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of state.recorderBuffer) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
   }
+  const blob = encodeWav(merged, state.recordingSampleRate || 44100);
+  if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
+  els.downloadLink.href = URL.createObjectURL(blob);
+  els.downloadLink.download = `glance-note-${Date.now()}.wav`;
+  els.downloadLink.classList.remove('hidden');
+}
+
+function cleanupWavRecorder() {
+  try { state.recorderNode?.disconnect(); } catch (_) {}
+  try { state.recorderSilentGain?.disconnect(); } catch (_) {}
+  state.recorderNode = null;
+  state.recorderSilentGain = null;
 }
 
 async function beginRecording() {
   if (!state.audioReady) setupAudio();
   if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-  if (state.recorder && state.recorder.state !== 'inactive') {
-    try { state.recorder.stop(); } catch (_) {}
-  }
-
-  state.recordingChunks = [];
-  state.recorder = createRecorder();
-  if (!state.recorder) {
-    setMessage('Recording is not supported on this device/browser.');
-    return;
-  }
-
-  state.recorder.ondataavailable = (event) => {
-    if (event.data && event.data.size) state.recordingChunks.push(event.data);
-  };
-
-  state.recorder.onstop = () => {
-    if (!state.recordingChunks.length) return;
-    const blob = new Blob(state.recordingChunks, { type: state.mediaRecorderMime || 'audio/webm' });
-    if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
-    els.downloadLink.href = URL.createObjectURL(blob);
-    els.downloadLink.download = `glance-note-${Date.now()}.webm`;
-    els.downloadLink.classList.remove('hidden');
-  };
-
-  state.recorder.start();
+  cleanupWavRecorder();
+  state.recorderBuffer = [];
+  startWavRecorder();
   state.recordingState = 'recording';
   els.countdownText.textContent = '';
   updateRecordingUI();
@@ -268,13 +298,14 @@ function stopRecording() {
     cancelQueuedRecording();
     return;
   }
-  if (state.recorder && state.recorder.state === 'recording') {
-    state.recorder.stop();
+  if (state.recordingState === 'recording') {
+    state.recordingState = 'idle';
+    cleanupWavRecorder();
+    finalizeWavRecording();
   }
-  state.recordingState = 'idle';
   updateRecordingUI();
   els.countdownText.textContent = 'Saved below.';
-  setMessage('Recording stopped.');
+  setMessage('Recording stopped. Saved as WAV.');
 }
 
 function cycleVoice() {
@@ -506,6 +537,7 @@ window.addEventListener('visibilitychange', () => {
 window.addEventListener('beforeunload', () => {
   cancelAnimationFrame(animationHandle);
   if (els.downloadLink.href) URL.revokeObjectURL(els.downloadLink.href);
+  cleanupWavRecorder();
   state.stream?.getTracks().forEach((track) => track.stop());
   state.faceLandmarker?.close?.();
   audioCtx?.close?.();
