@@ -1,5 +1,5 @@
-const CACHE = 'glance-note-20260313ios2';
-const ASSETS = ['./','./index.html?v=20260313ios2','./app.js?v=20260313ios2','./manifest.json?v=20260313ios2','./icon-192.png','./icon-512.png'];
+const CACHE = 'glance-note-20260315toggle1';
+const ASSETS = ['./','./index.html?v=20260315toggle1','./app.js?v=20260315toggle1','./manifest.json?v=20260315toggle1','./icon-192.png','./icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
